@@ -10,13 +10,37 @@ router.post(
   '/',
   auth,
   role('TOPPER'),
- upload.fields([
-  { name: 'pdf', maxCount: 1 },          
-  { name: 'previewImages', maxCount: 5 } 
+  upload.fields([
+  { name: 'pdf', maxCount: 1 }
 ]),
   validate(createNoteSchema),
   controller.uploadNote
 );
+
+// Admin: Get all pending notes
+router.get(
+  '/admin/pending',
+  auth,
+  role('ADMIN'),
+  controller.getPendingNotes
+);
+
+// Admin: Approve/Reject note
+router.patch(
+  '/admin/:noteId/status',
+  auth,
+  role('ADMIN'),
+  // Add validation middleware here if needed
+  controller.updateNoteStatus
+);
+
+// Get all approved notes (public/student)
+router.get(
+  '/',
+  auth, // Require login (Student/Topper/Admin)
+  controller.getApprovedNotes
+);
+
 // Get all approved notes (public)
 router.get(
   '/:noteId/buyers',
@@ -29,6 +53,13 @@ router.get(
   '/:noteId/preview',
   auth,
   controller.getNotePreview
+);
+
+// Get note details (Single Note Page)
+router.get(
+  '/:noteId',
+  auth,
+  controller.getNoteDetails
 );
 
 module.exports = router;

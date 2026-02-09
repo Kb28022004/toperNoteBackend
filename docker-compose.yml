@@ -1,0 +1,42 @@
+version: '3.8'
+
+services:
+  # 1. NODE JS BACKEND
+  api:
+    build: .
+    container_name: toppernotes_api
+    ports:
+      - "4000:4000"
+    volumes:
+      - .:/app # Hot reload if nodemon is used, but for prod use image
+      - /app/node_modules
+    environment:
+      - MONGODB_URI=mongodb://mongo:27017/toppernotes_db
+      - REDIS_URL=redis://redis:6379
+      - PORT=4000
+    depends_on:
+      - mongo
+      - redis
+    command: npm run dev # Use 'npm run dev' to leverage nodemon in development
+
+  # 2. MONGODB
+  mongo:
+    image: mongo:6.0
+    container_name: toppernotes_mongo
+    ports:
+      - "27017:27017" # Exposed for local Compass/GUI access
+    volumes:
+      - mongo_data:/data/db
+
+  # 3. REDIS
+  redis:
+    image: redis:alpine
+    container_name: toppernotes_redis
+    ports:
+      - "6379:6379" # Exposed for local debugging
+    volumes:
+      - redis_data:/data
+
+volumes:
+  mongo_data:
+  redis_data:

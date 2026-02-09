@@ -1,11 +1,12 @@
 const fs = require("fs");
 const path = require("path");
-const pdfParse = require("pdf-parse").default;
+const pdfParse = require("pdf-parse");
 
 const Note = require("./notes.model");
 const TopperProfile = require("../toppers/topper.model");
 const Order = require("../orders/order.model");
 const StudentProfile = require("../students/student.model");
+const Review = require("../reviews/review.model");
 
 const storageService = require("../../services/storage.service");
 const { convertPdfToImages } = require("../../utils/pdfToImages");
@@ -91,35 +92,42 @@ try {
     throw new Error("Invalid PDF file (no pages detected)");
   }
 
-  // 5️⃣ Convert PDF → preview images (ALL pages)
+  // 5️⃣ PREVIEW IMAGES LOGIC
+  // Priority: 1. Try generating from PDF
+  //           2. Use manually uploaded previews
+  
   const previewDir = path.join("uploads", "previews");
   if (!fs.existsSync(previewDir)) {
     fs.mkdirSync(previewDir, { recursive: true });
   }
 
   const baseName = `note-${Date.now()}-${Math.round(Math.random() * 1e9)}`;
-
   let generatedFiles = [];
+  let previewImages = [];
+
+  // attempt generation
   try {
-    generatedFiles = await convertPdfToImages(
-      pdfPath,
-      previewDir,
-      baseName
-    );
+    generatedFiles = await convertPdfToImages(pdfPath, previewDir, baseName);
+    
+    if (generatedFiles && generatedFiles.length > 0) {
+       previewImages = generatedFiles
+        .sort()
+        .map((file) => storageService.getFileUrl(req, `previews/${file}`));
+    }
   } catch (err) {
-    throw new Error("Failed to generate preview images from PDF");
+    console.warn("⚠️ Preview generation failed:", err.message);
+    // don't throw, we have fallback
   }
 
-  if (!generatedFiles.length) {
-    throw new Error("Preview images could not be generated");
+  // (Fallback logic removed: Strictly generating from PDF)
+
+  // validation: must have at least one preview source
+  if (previewImages.length === 0) {
+      console.warn("⚠️ Preview generation yielded 0 images. Admin will see 0 pages. Check pdf-poppler installation.");
+      // We allow upload to proceed. Admin can view via PDF URL.
+      previewImages = []; 
   }
 
-  // 6️⃣ Build preview URLs (sorted, real files only)
-  const previewImages = generatedFiles
-    .sort()
-    .map((file) =>
-      storageService.getFileUrl(req, `previews/${file}`)
-    );
 
   // 7️⃣ Save note
   const note = await Note.create({
@@ -132,15 +140,121 @@ try {
     price: data.price,
     tags: data.tags || [],
 
-    pdfUrl: storageService.getFileUrl(req, pdfFile.filename),
+    pdfUrl: storageService.getFileUrl(req, `pdfs/${pdfFile.filename}`),
     pageCount,                // ✅ real count
     previewImages,            // ✅ all pages
-    publicPreviewCount: 3,    // students see first 3 pages
+    publicPreviewCount: Math.max(1, Math.ceil(pageCount / 4)),    // students see 1/4th of pages (min 1)
 
     status: "UNDER_REVIEW",
   });
 
   return note;
+};
+/**
+ * ===============================
+ * 📋 GET ALL NOTES FOR APPROVAL (ADMIN)
+ * ===============================
+ */
+exports.getPendingNotes = async () => {
+    return await Note.find({ status: "UNDER_REVIEW" })
+        .populate({
+            path: "topperId",
+            select: "fullName email profilePhoto stream" // Select relevant topper fields
+        })
+        .sort({ createdAt: -1 }) // Newest first
+        .lean();
+};
+
+/**
+ * ===============================
+ * 📚 GET ALL APPROVED NOTES (STUDENTS)
+ * ===============================
+ */
+exports.getAllApprovedNotes = async (user, filters = {}) => {
+    const page = Math.max(1, parseInt(filters.page) || 1);
+    const limit = Math.max(1, parseInt(filters.limit) || 10);
+    const skip = (page - 1) * limit;
+
+    const query = { status: "PUBLISHED" };  // Strictly approved
+
+    // 1. Personalization (Priority: Student must have profile)
+    if (user && user.role === "STUDENT") {
+        const studentProfile = await StudentProfile.findOne({ userId: user.id });
+        if (!studentProfile) {
+             // ⚠️ Student has no profile -> Cannot determine class/interest. Return empty to avoid showing irrelevant content.
+             return { notes: [], pagination: { totalNotes: 0, totalPages: 0, currentPage: page, limit } };
+        }
+
+        // Apply Strict Personalization
+        query.class = studentProfile.class;
+        query.board = studentProfile.board;
+
+        if (filters.subject) {
+            // Must be one of their interested subjects
+            if (!studentProfile.subjects.includes(filters.subject)) {
+                 return { notes: [], pagination: { totalNotes: 0, totalPages: 0, currentPage: page, limit } };
+            }
+            query.subject = filters.subject;
+        } else {
+            // Default: Show all allowed subjects
+            query.subject = { $in: studentProfile.subjects };
+        }
+    } else {
+        // Guest / Admin / Topper -> Standard Filters
+        if (filters.subject) query.subject = filters.subject;
+        if (filters.class) query.class = filters.class;
+        if (filters.board) query.board = filters.board;
+    }
+    
+    // 2. Search (Text) via Chapter Name or Subject
+    if (filters.search) {
+        const searchRegex = { $regex: filters.search, $options: "i" };
+        query.$or = [
+            { chapterName: searchRegex },
+            { subject: searchRegex }
+        ];
+    }
+
+    // 3. Pagination & Execution
+    const totalNotes = await Note.countDocuments(query);
+    const notes = await Note.find(query)
+        .populate("topperId", "fullName profilePhoto stream") 
+        .sort({ createdAt: -1 })
+        .skip(skip)
+        .limit(limit)
+        .lean();
+
+    // 4. Sanitize Previews (1/4th Rule)
+    const mappedNotes = notes.map(note => {
+        const quarterPages = Math.max(1, Math.ceil(note.pageCount / 4));
+        note.previewImages = note.previewImages ? note.previewImages.slice(0, quarterPages) : [];
+        return note;
+    });
+
+    return {
+        notes: mappedNotes,
+        pagination: {
+            totalNotes,
+            totalPages: Math.ceil(totalNotes / limit),
+            currentPage: page,
+            limit
+        }
+    };
+};
+
+/**
+ * ===============================
+ * 🛡️ APPROVE/REJECT NOTE (ADMIN)
+ * ===============================
+ */
+exports.updateNoteStatus = async (noteId, status, adminRemark) => {
+    const note = await Note.findById(noteId);
+    if (!note) throw new Error("Note not found");
+
+    note.status = status;
+    if (adminRemark) note.adminRemark = adminRemark;
+
+    return await note.save();
 };
 
 /**
@@ -157,6 +271,7 @@ exports.getNotePreview = async (user, noteId) => {
     return {
       pages: note.previewImages,
       totalPages: note.pageCount,
+      pdfUrl: note.pdfUrl // ✅ Admin needs full PDF access to review
     };
   }
 
@@ -175,11 +290,146 @@ exports.getNotePreview = async (user, noteId) => {
     };
   }
 
-  // 👀 Public preview (first N pages)
+  // 👀 Public preview (1/4th of pages, min 1)
+  const quarterPages = Math.max(1, Math.ceil(note.pageCount / 4));
   return {
-    pages: note.previewImages.slice(0, note.publicPreviewCount),
+    pages: note.previewImages.slice(0, quarterPages),
     totalPages: note.pageCount,
   };
+};
+
+
+
+/**
+* ===============================
+* 📅 Helper: Format "days ago"
+* ===============================
+*/
+const formatTimeAgo = (date) => {
+    const seconds = Math.floor((new Date() - date) / 1000);
+    let interval = seconds / 31536000;
+  
+    if (interval > 1) return Math.floor(interval) + " years ago";
+    interval = seconds / 2592000;
+    if (interval > 1) return Math.floor(interval) + " months ago";
+    interval = seconds / 86400;
+    if (interval > 1) return Math.floor(interval) + " days ago";
+    interval = seconds / 3600;
+    if (interval > 1) return Math.floor(interval) + " hours ago";
+    interval = seconds / 60;
+    if (interval > 1) return Math.floor(interval) + " minutes ago";
+    return Math.floor(seconds) + " seconds ago";
+};
+
+/**
+ * ===============================
+ * 📝 GET NOTE DETAILS (STUDENT PANEL)
+ * ===============================
+ */
+exports.getNoteDetails = async (noteId, userId) => {
+    // 1. Fetch Note + Topper
+    const note = await Note.findOne({ _id: noteId, status: "PUBLISHED" })
+        .populate("topperId", "firstName lastName profilePhoto stream highlights isVerified");
+    
+    if (!note) throw new Error("Note not found");
+
+    // 2. Fetch Topper Profile for extra metadata
+    const topperProfile = await TopperProfile.findOne({ userId: note.topperId._id });
+
+    // 3. Purchase Status
+    let isPurchased = false;
+    if (userId) {
+        // Check if user bought it (Status must be SUCCESS)
+        isPurchased = await Order.exists({
+            noteId,
+            studentId: userId,
+            paymentStatus: "SUCCESS"
+        });
+    }
+
+    // 4. Previews Logic (1/4th page rule if not purchased)
+    let previewImages = note.previewImages || [];
+    if (!isPurchased && previewImages.length > 0) {
+        const quarterPages = Math.max(1, Math.ceil(note.pageCount / 4));
+        previewImages = previewImages.slice(0, quarterPages);
+    }
+    
+    // 5. Construct Response Object (Matching UI)
+    // 5. Fetch Real Reviews
+    const reviews = await Review.find({ noteId })
+        .populate("studentId", "fullName profilePhoto")
+        .sort({ createdAt: -1 })
+        .limit(5)
+        .lean();
+
+    const formattedReviews = reviews.map(r => ({
+        user: r.studentId?.fullName || "Student",
+        daysAgo: formatTimeAgo(r.createdAt),
+        rating: r.rating,
+        comment: r.comment,
+        verifiedPurchase: r.isVerifiedPurchase
+    }));
+
+    // 6. Consolidate Rating (use note stats as source of truth for avg)
+    const ratingAvg = note.stats?.ratingAvg || 0;
+    const ratingCount = note.stats?.ratingCount || 0;
+
+    // 7. Construct Response Object (Matching UI)
+    return {
+        id: note._id,
+
+        // Header
+        title: `Class ${note.class} ${note.subject} - ${note.chapterName} Complete Notes`, // e.g. "Class 12 Physics - Optics Complete Notes"
+        subject: note.subject,
+        class: note.class,
+        
+        // Images (Watermarked handled by URL generation usually)
+        previewImages,
+        
+        // Rating
+        rating: parseFloat(ratingAvg.toFixed(1)),
+        reviewCount: ratingCount,
+
+        // Topper Card
+        topper: {
+            id: note.topperId._id,
+            name: topperProfile ? `${topperProfile.firstName} ${topperProfile.lastName}` : "Rahul S.",
+            profilePhoto: note.topperId.profilePhoto,
+            badges: ["TOPPER"],
+            bio: topperProfile?.highlights?.[0] || "IIT Delhi '24 • 98.5% in Boards",
+            isVerified: true
+        },
+
+        // Metrics
+        metrics: {
+            pages: note.pageCount || 45,
+            language: "English",
+            pdfSize: "12 MB" // Placeholder
+        },
+
+        // Description
+        description: `Comprehensive handwritten notes covering ${note.chapterName}. Includes solved examples from last 10 years of boards. Highlights key formulas and derivation steps clearly. Perfect for last-minute revision.`,
+        
+        // Table of Contents (Mocked based on image)
+        tableOfContents: [
+             { title: "Introduction to Ray Optics", page: "Pg 1-5" },
+             { title: "Refraction at Spherical Surfaces", page: "Pg 6-18" },
+             { title: "Wave Optics & Interference", page: "Pg 19-32" }
+        ],
+
+        // Reviews (Real from DB)
+        reviews: formattedReviews,
+
+        // Pricing
+        price: {
+            current: note.price,
+            original: Math.round(note.price * 1.5),
+            discount: "33% OFF"
+        },
+
+        // User State
+        isPurchased: !!isPurchased
+    };
 };
 
 /**

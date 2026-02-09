@@ -26,7 +26,22 @@ router.post(
   controller.submitForVerification
 );
 
+const role = require('../../middlewares/role.middleware');
+
+// Follow Topper
+router.post(
+  '/:userId/follow',
+  auth,
+  role('STUDENT'),
+  controller.followTopper
+);
+
+// 👥 Get Followers (Public or Protected?)
+// Usually public is fine, or restricted to auth users. Let's make it public for now or same as profile.
+router.get('/:userId/followers', controller.getTopperFollowers);
+
 // 🌍 Public profile
+router.get('/', controller.getAllToppers);
 router.get('/:userId/public', controller.getPublicProfile);
 
 module.exports = router;
