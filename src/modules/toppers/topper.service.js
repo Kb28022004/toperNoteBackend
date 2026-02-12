@@ -241,9 +241,9 @@ exports.getAllToppers = async (user) => {
 // Helper to infer stream
 const inferStreamFromSubjects = (subjects) => {
   const STREAM_MAP = {
-    SCIENCE: ["Physics", "Chemistry", "Maths", "Biology"],
-    COMMERCE: ["Accountancy", "Business Studies", "Economics", "Maths"],
-    ARTS: ["History", "Political Science", "Geography", "Economics"],
+    SCIENCE: ["phy", "chem", "maths", "bio"],
+    COMMERCE: ["acc", "bst", "eco", "maths"],
+    ARTS: ["hist", "pol", "geo", "eco"],
   };
 
   for (const [stream, keywords] of Object.entries(STREAM_MAP)) {

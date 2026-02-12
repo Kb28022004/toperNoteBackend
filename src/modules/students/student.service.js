@@ -20,7 +20,7 @@ exports.createStudent = async (userId, payload, file, req) => {
   let profilePhoto;
 
   if (file) {
-    profilePhoto = storageService.getFileUrl(req, file.filename);
+    profilePhoto = storageService.getFileUrl(req, `profiles/${file.filename}`);
   }
 
   const student = await StudentProfile.findOneAndUpdate(
@@ -29,6 +29,7 @@ exports.createStudent = async (userId, payload, file, req) => {
       userId,
       fullName: payload.fullName,
       class: payload.class,
+      stream: payload.stream,
       board: payload.board,
       medium: payload.medium,
       subjects: payload.subjects,
@@ -42,4 +43,3 @@ exports.createStudent = async (userId, payload, file, req) => {
 
   return student;
 };
-2

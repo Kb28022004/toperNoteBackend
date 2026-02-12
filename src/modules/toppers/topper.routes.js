@@ -13,6 +13,14 @@ router.post(
   '/profile',
   auth,
   upload.single('profilePhoto'),
+  (req, res, next) => {
+    if (req.body.achievements && typeof req.body.achievements === 'string') {
+      try {
+        req.body.achievements = JSON.parse(req.body.achievements);
+      } catch (e) {}
+    }
+    next();
+  },
   validate(basicProfileSchema),
   controller.saveBasicProfile
 );
@@ -22,6 +30,14 @@ router.post(
   '/verify',
   auth,
   upload.single('marksheet'),
+  (req, res, next) => {
+    if (req.body.subjectMarks && typeof req.body.subjectMarks === 'string') {
+      try {
+        req.body.subjectMarks = JSON.parse(req.body.subjectMarks);
+      } catch (e) {}
+    }
+    next();
+  },
   validate(verificationSchema),
   controller.submitForVerification
 );

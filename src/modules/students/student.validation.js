@@ -11,15 +11,19 @@ exports.createStudentSchema = Joi.object({
     .required(),
 
   board: Joi.string()
-    .valid('CBSE', 'ICSE', 'STATE')
+    .valid('CBSE', 'ICSE', 'State Board')
     .required(),
 
   medium: Joi.string()
     .valid('ENGLISH', 'HINDI')
     .required(),
 
+  stream: Joi.string()
+    .valid('Science (PCM)', 'Science (PCB)', 'Science (PCMB)', 'Commerce', 'Arts')
+    .optional(),
+
   subjects: Joi.array()
     .items(Joi.string().min(2))
-    .min(3) 
+    .min(3)
     .required(),
 });

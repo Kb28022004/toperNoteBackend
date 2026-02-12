@@ -24,10 +24,16 @@ const studentProfileSchema = new mongoose.Schema(
       enum: ['6', '7', '8', '9', '10', '11', '12'],
     },
 
+    stream: {
+      type: String,
+      enum: ['Science (PCM)', 'Science (PCB)', 'Science (PCMB)', 'Commerce', 'Arts'],
+      default: 'Science (PCM)',
+    },
+
     board: {
       type: String,
       required: true,
-      enum: ['CBSE', 'ICSE', 'STATE'],
+      enum: ['CBSE', 'ICSE', 'State Board'],
     },
 
     medium: {

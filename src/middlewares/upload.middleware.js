@@ -20,7 +20,11 @@ const storage = multer.diskStorage({
       dir = "uploads/previews";
     }
 
-    if (file.fieldname === "profilePhoto") {
+    if (
+      file.fieldname === "profilePhoto" || 
+      file.fieldname === "profileImage" || 
+      file.fieldname === "photo"
+    ) {
       dir = "uploads/profiles";
     }
 
@@ -46,9 +50,13 @@ const fileFilter = (req, file, cb) => {
     }
   }
 
-  if (file.fieldname === "previewImages") {
+  if (
+    file.fieldname === "previewImages" || 
+    file.fieldname === "photo" || 
+    file.fieldname === "profileImage"
+  ) {
     if (!file.mimetype.startsWith("image/")) {
-      return cb(new Error("Preview must be an image"), false);
+      return cb(new Error("File must be an image"), false);
     }
   }
 
