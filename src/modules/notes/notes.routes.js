@@ -17,6 +17,13 @@ router.post(
   controller.uploadNote
 );
 
+router.get(
+  '/me',
+  auth,
+  role('TOPPER'),
+  controller.getMyNotes
+);
+
 // Admin: Get all pending notes
 router.get(
   '/admin/pending',

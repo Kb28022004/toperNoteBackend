@@ -1,11 +1,39 @@
 const adminService = require('./admin.service');
 
-// Get all pending topper profiles
+// Create Admin Profile
+exports.createProfile = async (req, res, next) => {
+    try {
+        const result = await adminService.createProfile(
+            req.user.id,
+            req.body,
+            req.file,
+            req
+        );
+        res.status(201).json({
+            success: true,
+            message: 'Admin profile created successfully',
+            data: result
+        });
+    } catch (err) {
+        next(err);
+    }
+};
 
+// Get all pending topper profiles
 exports.getPendingToppers = async (req, res, next) => {
   try {
-    const toppers = await adminService.getPendingToppers();
-    res.json({ success: true, data: toppers });
+    const { page, limit, search, expertiseClass, stream, board, status } = req.query;
+    const result = await adminService.getToppers({
+      page: parseInt(page) || 1,
+      limit: parseInt(limit) || 10,
+      search,
+      expertiseClass,
+      stream,
+      board,
+      status: status || "PENDING",
+      req
+    });
+    res.json({ success: true, ...result });
   } catch (err) {
     next(err);
   }
@@ -35,10 +63,11 @@ exports.rejectTopper = async (req, res, next) => {
 };
 
 
-// Get all notes waiting for approval
+// Get all notes by status
 exports.getPendingNotes = async (req, res, next) => {
   try {
-    const notes = await adminService.getPendingNotes();
+    const { status } = req.query;
+    const notes = await adminService.getNotesByStatus(status || 'UNDER_REVIEW');
     res.json({
       success: true,
       data: notes,

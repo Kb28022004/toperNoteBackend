@@ -97,3 +97,14 @@ exports.getAllToppers = async (req, res, next) => {
     next(err);
   }
 };
+exports.getMyProfile = async (req, res, next) => {
+  try {
+    const profile = await topperService.getMyProfile(req.user.id);
+    res.json({
+      success: true,
+      data: profile,
+    });
+  } catch (err) {
+    next(err);
+  }
+};

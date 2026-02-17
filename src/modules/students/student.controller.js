@@ -19,3 +19,15 @@ exports.createStudent = async (req, res, next) => {
     next(err);
   }
 };
+
+exports.getProfile = async (req, res, next) => {
+  try {
+    const profile = await studentService.getStudentProfile(req.user.id);
+    res.json({
+      success: true,
+      data: profile,
+    });
+  } catch (err) {
+    next(err);
+  }
+};

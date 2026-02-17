@@ -10,6 +10,7 @@ const Review = require("../reviews/review.model");
 
 const storageService = require("../../services/storage.service");
 const { convertPdfToImages } = require("../../utils/pdfToImages");
+const redis = require("../../config/redis");
 
 const STREAM_SUBJECTS = {
   SCIENCE: ["Physics", "Chemistry", "Maths", "Biology"],
@@ -175,6 +176,21 @@ exports.getAllApprovedNotes = async (user, filters = {}) => {
     const limit = Math.max(1, parseInt(filters.limit) || 10);
     const skip = (page - 1) * limit;
 
+    // 1. Try Cache for non-personalized guest view
+    const isGuest = !user;
+    const cacheKey = `notes:marketplace:${filters.subject || 'all'}:${filters.class || 'all'}:${filters.board || 'all'}:${filters.tags || 'none'}:${filters.search || 'none'}:${page}`;
+
+    if (isGuest) {
+        try {
+            if (redis.status === 'ready') {
+                const cached = await redis.get(cacheKey);
+                if (cached) return JSON.parse(cached);
+            }
+        } catch (err) {
+            console.error("Redis Cache Error (Get):", err.message);
+        }
+    }
+
     const query = { status: "PUBLISHED" };  // Strictly approved
 
     // 1. Personalization (Priority: Student must have profile)
@@ -206,7 +222,11 @@ exports.getAllApprovedNotes = async (user, filters = {}) => {
         if (filters.board) query.board = filters.board;
     }
     
-    // 2. Search (Text) via Chapter Name or Subject
+    // 3. Search & Tags
+    if (filters.tags) {
+        query.tags = { $in: Array.isArray(filters.tags) ? filters.tags : [filters.tags] };
+    }
+
     if (filters.search) {
         const searchRegex = { $regex: filters.search, $options: "i" };
         query.$or = [
@@ -215,7 +235,7 @@ exports.getAllApprovedNotes = async (user, filters = {}) => {
         ];
     }
 
-    // 3. Pagination & Execution
+    // 4. Pagination & Execution
     const totalNotes = await Note.countDocuments(query);
     const notes = await Note.find(query)
         .populate("topperId", "fullName profilePhoto stream") 
@@ -231,7 +251,7 @@ exports.getAllApprovedNotes = async (user, filters = {}) => {
         return note;
     });
 
-    return {
+    const result = {
         notes: mappedNotes,
         pagination: {
             totalNotes,
@@ -240,6 +260,18 @@ exports.getAllApprovedNotes = async (user, filters = {}) => {
             limit
         }
     };
+
+    if (isGuest) {
+        try {
+            if (redis.status === 'ready') {
+                await redis.set(cacheKey, JSON.stringify(result), 'EX', 600);
+            }
+        } catch (err) {
+            console.error("Redis Cache Error (Set):", err.message);
+        }
+    }
+
+    return result;
 };
 
 /**
@@ -326,20 +358,86 @@ const formatTimeAgo = (date) => {
  * 📝 GET NOTE DETAILS (STUDENT PANEL)
  * ===============================
  */
-exports.getNoteDetails = async (noteId, userId) => {
-    // 1. Fetch Note + Topper
-    const note = await Note.findOne({ _id: noteId, status: "PUBLISHED" })
-        .populate("topperId", "firstName lastName profilePhoto stream highlights isVerified");
+exports.getNoteDetails = async (noteId, userId, userRole) => {
+    const cacheKey = `note:details:${noteId}`;
+    let noteData;
+
+    try {
+        if (redis.status === 'ready') {
+            const cached = await redis.get(cacheKey);
+            if (cached) {
+                noteData = JSON.parse(cached);
+            }
+        }
+    } catch (err) {
+        console.error("Redis Cache Error (Get Note):", err.message);
+    }
     
-    if (!note) throw new Error("Note not found");
+    if (!noteData) {
+        // 1. Fetch Note + Topper
+        const note = await Note.findOne({ _id: noteId, status: "PUBLISHED" })
+            .populate("topperId", "firstName lastName profilePhoto stream highlights isVerified");
+        
+        if (!note) throw new Error("Note not found");
 
-    // 2. Fetch Topper Profile for extra metadata
-    const topperProfile = await TopperProfile.findOne({ userId: note.topperId._id });
+        // 2. Fetch Topper Profile for extra metadata
+        const topperProfile = await TopperProfile.findOne({ userId: note.topperId._id });
 
-    // 3. Purchase Status
+        // 5. Fetch Real Reviews
+        const reviews = await Review.find({ noteId })
+            .populate("studentId", "fullName profilePhoto")
+            .sort({ createdAt: -1 })
+            .limit(5)
+            .lean();
+
+        const formattedReviews = reviews.map(r => ({
+            user: r.studentId?.fullName || "Student",
+            daysAgo: formatTimeAgo(r.createdAt),
+            rating: r.rating,
+            comment: r.comment,
+            verifiedPurchase: r.isVerifiedPurchase
+        }));
+
+        noteData = {
+            id: note._id,
+            title: `Class ${note.class} ${note.subject} - ${note.chapterName} Complete Notes`,
+            subject: note.subject,
+            class: note.class,
+            board: note.board,
+            previewImages: note.previewImages || [],
+            pageCount: note.pageCount || 0,
+            rating: parseFloat((note.stats?.ratingAvg || 0).toFixed(1)),
+            reviewCount: note.stats?.ratingCount || 0,
+            price: note.price,
+            topper: {
+                id: note.topperId._id,
+                name: topperProfile ? `${topperProfile.firstName} ${topperProfile.lastName}` : "Rahul S.",
+                profilePhoto: note.topperId.profilePhoto,
+                badges: ["TOPPER"],
+                bio: topperProfile?.highlights?.[0] || "IIT Delhi '24 • 98.5% in Boards",
+                isVerified: true
+            },
+            description: `Comprehensive handwritten notes covering ${note.chapterName}. Includes solved examples from last 10 years of boards. Highlights key formulas and derivation steps clearly. Perfect for last-minute revision.`,
+            tableOfContents: [
+                 { title: "Introduction", page: "Pg 1" },
+                 { title: "Key Concepts", page: "Pg 6" },
+                 { title: "Solved Examples", page: "Pg 19" }
+            ],
+            reviews: formattedReviews
+        };
+
+        try {
+            if (redis.status === 'ready') {
+                await redis.set(cacheKey, JSON.stringify(noteData), 'EX', 1800); // 30 mins
+            }
+        } catch (err) {
+            console.error("Redis Cache Error (Set Note):", err.message);
+        }
+    }
+
+    // 3. Purchase Status - Always Dynamic
     let isPurchased = false;
     if (userId) {
-        // Check if user bought it (Status must be SUCCESS)
         isPurchased = await Order.exists({
             noteId,
             studentId: userId,
@@ -347,88 +445,24 @@ exports.getNoteDetails = async (noteId, userId) => {
         });
     }
 
-    // 4. Previews Logic (1/4th page rule if not purchased)
-    let previewImages = note.previewImages || [];
-    if (!isPurchased && previewImages.length > 0) {
-        const quarterPages = Math.max(1, Math.ceil(note.pageCount / 4));
-        previewImages = previewImages.slice(0, quarterPages);
+    // 4. Previews Logic (Admin/Topper see all, Student sees 3 pages if not purchased)
+    let finalPreviews = noteData.previewImages;
+    const isViewerStudent = userRole === 'STUDENT';
+
+    // If viewer is a student and hasn't purchased, limit to 3 pages
+    if (isViewerStudent && !isPurchased && finalPreviews.length > 0) {
+        finalPreviews = finalPreviews.slice(0, Math.min(3, finalPreviews.length));
     }
     
-    // 5. Construct Response Object (Matching UI)
-    // 5. Fetch Real Reviews
-    const reviews = await Review.find({ noteId })
-        .populate("studentId", "fullName profilePhoto")
-        .sort({ createdAt: -1 })
-        .limit(5)
-        .lean();
-
-    const formattedReviews = reviews.map(r => ({
-        user: r.studentId?.fullName || "Student",
-        daysAgo: formatTimeAgo(r.createdAt),
-        rating: r.rating,
-        comment: r.comment,
-        verifiedPurchase: r.isVerifiedPurchase
-    }));
-
-    // 6. Consolidate Rating (use note stats as source of truth for avg)
-    const ratingAvg = note.stats?.ratingAvg || 0;
-    const ratingCount = note.stats?.ratingCount || 0;
-
-    // 7. Construct Response Object (Matching UI)
     return {
-        id: note._id,
-
-        // Header
-        title: `Class ${note.class} ${note.subject} - ${note.chapterName} Complete Notes`, // e.g. "Class 12 Physics - Optics Complete Notes"
-        subject: note.subject,
-        class: note.class,
-        
-        // Images (Watermarked handled by URL generation usually)
-        previewImages,
-        
-        // Rating
-        rating: parseFloat(ratingAvg.toFixed(1)),
-        reviewCount: ratingCount,
-
-        // Topper Card
-        topper: {
-            id: note.topperId._id,
-            name: topperProfile ? `${topperProfile.firstName} ${topperProfile.lastName}` : "Rahul S.",
-            profilePhoto: note.topperId.profilePhoto,
-            badges: ["TOPPER"],
-            bio: topperProfile?.highlights?.[0] || "IIT Delhi '24 • 98.5% in Boards",
-            isVerified: true
-        },
-
-        // Metrics
-        metrics: {
-            pages: note.pageCount || 45,
-            language: "English",
-            pdfSize: "12 MB" // Placeholder
-        },
-
-        // Description
-        description: `Comprehensive handwritten notes covering ${note.chapterName}. Includes solved examples from last 10 years of boards. Highlights key formulas and derivation steps clearly. Perfect for last-minute revision.`,
-        
-        // Table of Contents (Mocked based on image)
-        tableOfContents: [
-             { title: "Introduction to Ray Optics", page: "Pg 1-5" },
-             { title: "Refraction at Spherical Surfaces", page: "Pg 6-18" },
-             { title: "Wave Optics & Interference", page: "Pg 19-32" }
-        ],
-
-        // Reviews (Real from DB)
-        reviews: formattedReviews,
-
-        // Pricing
+        ...noteData,
+        previewImages: finalPreviews,
+        isPurchased: !!isPurchased,
         price: {
-            current: note.price,
-            original: Math.round(note.price * 1.5),
+            current: noteData.price,
+            original: Math.round(noteData.price * 1.5),
             discount: "33% OFF"
-        },
-
-        // User State
-        isPurchased: !!isPurchased
+        }
     };
 };
 
@@ -484,4 +518,19 @@ exports.getNoteBuyers = async (topperId, noteId) => {
       purchasedAt: order.createdAt,
     };
   });
+};
+
+exports.getMyNotes = async (userId) => {
+  const notes = await Note.find({ topperId: userId }).sort({ createdAt: -1 }).lean();
+  
+  // Fetch sales count for each note
+  const enrichedNotes = await Promise.all(notes.map(async (note) => {
+    const salesCount = await Order.countDocuments({ noteId: note._id, paymentStatus: 'SUCCESS' });
+    return {
+      ...note,
+      salesCount
+    };
+  }));
+
+  return enrichedNotes;
 };

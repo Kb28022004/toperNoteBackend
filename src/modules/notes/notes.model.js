@@ -86,7 +86,11 @@ publicPreviewCount: {
       ratingCount: { type: Number, default: 0 },
     },
   },
-  { timestamps: true }
 );
+
+// 🚀 PERFORMANCE INDEXES (FOR 1M+ USERS)
+noteSchema.index({ status: 1, subject: 1, class: 1, createdAt: -1 });
+noteSchema.index({ status: 1, board: 1, class: 1 });
+noteSchema.index({ chapterName: 'text', subject: 'text' });
 
 module.exports = mongoose.model('Note', noteSchema);

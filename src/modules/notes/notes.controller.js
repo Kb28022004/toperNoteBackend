@@ -95,10 +95,22 @@ exports.getApprovedNotes = async (req, res, next) => {
 
 exports.getNoteDetails = async (req, res, next) => {
   try {
-    const data = await noteService.getNoteDetails(req.params.noteId, req.user?.id);
+    const data = await noteService.getNoteDetails(req.params.noteId, req.user?.id, req.user?.role);
     res.json({
       success: true,
       data
+    });
+  } catch (err) {
+    next(err);
+  }
+};
+
+exports.getMyNotes = async (req, res, next) => {
+  try {
+    const notes = await noteService.getMyNotes(req.user.id);
+    res.json({
+      success: true,
+      data: notes,
     });
   } catch (err) {
     next(err);

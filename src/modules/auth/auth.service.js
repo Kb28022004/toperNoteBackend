@@ -60,6 +60,7 @@ exports.verifyOtp = async (phone, otp) => {
       phone: user.phone,
       role: user.role,
       profileCompleted: user.profileCompleted,
+      isTopperVerified: user.isTopperVerified,
     },
   };
 };

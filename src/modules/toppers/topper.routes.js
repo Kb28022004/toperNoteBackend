@@ -57,6 +57,7 @@ router.post(
 router.get('/:userId/followers', controller.getTopperFollowers);
 
 // 🌍 Public profile
+router.get('/me', auth, controller.getMyProfile);
 router.get('/', controller.getAllToppers);
 router.get('/:userId/public', controller.getPublicProfile);
 

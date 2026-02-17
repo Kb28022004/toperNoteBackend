@@ -69,6 +69,11 @@ const topperProfileSchema = new mongoose.Schema(
       },
     },
 
+    coreSubjects: {
+      type: [String],
+      default: [],
+    },
+
     /**
      * ⭐ PUBLIC HIGHLIGHTS
      * Shown below name (rank, % etc.)

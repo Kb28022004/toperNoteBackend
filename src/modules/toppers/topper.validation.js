@@ -20,8 +20,12 @@ exports.basicProfileSchema = Joi.object({
 
   board: Joi.string().valid('CBSE', 'ICSE', 'STATE').required(),
 
-  achievements: Joi.array()
+  coreSubjects: Joi.array()
     .items(Joi.string().trim().min(3))
+    .optional(),
+
+  achievements: Joi.array()
+    .items(Joi.string().trim().min(1))
     .min(1)
     .required(),
 });

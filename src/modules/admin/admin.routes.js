@@ -1,7 +1,20 @@
 const router = require('express').Router();
 const auth = require('../../middlewares/auth.middleware');
 const role = require('../../middlewares/role.middleware');
+const upload = require('../../middlewares/upload.middleware');
+const validate = require('../../middlewares/validate.middleware');
+const { adminProfileSchema } = require('./admin.validation');
 const controller = require('./admin.controller');
+
+// Create Admin Profile
+router.post(
+    '/profile',
+    auth,
+    role('ADMIN'),
+    upload.single('profilePhoto'),
+    validate(adminProfileSchema),
+    controller.createProfile
+);
 
 // Get all pending topper profiles
 router.get(

@@ -4,6 +4,8 @@ const Note = require('../notes/notes.model');
 const StudentProfile = require('../students/student.model');
 const storageService = require('../../services/storage.service');
 const Follow = require('./follow.model');
+const Order = require('../orders/order.model');
+const redis = require('../../config/redis');
 
 // save basic profile
 
@@ -15,7 +17,7 @@ exports.saveBasicProfile = async (userId, data, file, req) => {
   }
 
   const profilePhoto = file
-    ? storageService.getFileUrl(req, file.filename)
+    ? storageService.getFileUrl(req, `profiles/${file.filename}`)
     : undefined;
 
   return await TopperProfile.findOneAndUpdate(
@@ -34,7 +36,7 @@ exports.saveBasicProfile = async (userId, data, file, req) => {
 exports.submitForVerification = async (userId, data, file, req) => {
   if (!file) throw new Error('Marksheet is required');
 
-  const marksheetUrl = storageService.getFileUrl(req, file.filename);
+  const marksheetUrl = storageService.getFileUrl(req, `marksheets/${file.filename}`);
 
   const profile = await TopperProfile.findOneAndUpdate(
     { userId },
@@ -46,10 +48,20 @@ exports.submitForVerification = async (userId, data, file, req) => {
     { new: true }
   );
 
-  // ensure not auto-verified
+  // ensure not auto-verified but mark profile as completed
   await User.findByIdAndUpdate(userId, {
     isTopperVerified: false,
+    profileCompleted: true,
   });
+
+  // 🧹 Invalidate Admin Cache for Pending Toppers
+  try {
+    if (redis.status === 'ready') {
+        await redis.del('admin:toppers:PENDING');
+    }
+  } catch (err) {
+    console.error("Redis Cache Error (Invalidate Topper):", err.message);
+  }
 
   return profile;
 };
@@ -57,72 +69,76 @@ exports.submitForVerification = async (userId, data, file, req) => {
 // get public profile
 
 exports.getPublicProfile = async (userId, viewerId) => {
-  // 1️⃣ Fetch topper profile
-  const profile = await TopperProfile.findOne({
-    userId,
-    status: 'APPROVED',
-  }).lean();
+  const cacheKey = `topper:profile:${userId}`;
+  let profileData;
 
-  if (!profile) {
-    const err = new Error('Topper profile not found');
-    err.status = 404;
-    throw err;
+  const cached = await redis.get(cacheKey);
+  if (cached) {
+    profileData = JSON.parse(cached);
+  } else {
+    // 1️⃣ Fetch topper profile
+    const profile = await TopperProfile.findOne({
+      userId,
+      status: 'APPROVED',
+    }).lean();
+
+    if (!profile) {
+      const err = new Error('Topper profile not found');
+      err.status = 404;
+      throw err;
+    }
+
+    // 2️⃣ Fetch user (for verified badge)
+    const user = await User.findById(userId).select('isTopperVerified');
+
+    // 4️⃣ Fetch Latest Uploads (Notes)
+    const notes = await Note.find({
+      topperId: userId,
+      status: 'PUBLISHED',
+    })
+    .select('subject chapterName class price stats previewImages')
+    .sort({ createdAt: -1 })
+    .limit(3)
+    .lean();
+
+    const latestUploads = notes.map(n => ({
+      id: n._id,
+      title: `${n.subject} - ${n.chapterName}`,
+      subject: n.subject,
+      price: n.price,
+      rating: n.stats?.ratingAvg || 0,
+      coverImage: n.previewImages?.[0] || null
+    }));
+
+    profileData = {
+      userId: profile.userId,
+      fullName: `${profile.firstName} ${profile.lastName}`,
+      profilePhoto: profile.profilePhoto,
+      verified: user?.isTopperVerified || false,
+      achievements: profile.achievements,
+      stats: {
+        followers: profile.stats?.followersCount || 0,
+        rating: {
+          average: profile.stats?.rating?.average || 0,
+          count: profile.stats?.rating?.count || 0,
+        },
+        totalNotes: profile.stats?.totalNotes || 0,
+        totalSold: profile.stats?.totalSold || 0,
+      },
+      about: profile.shortBio,
+      latestUploads,
+    };
+
+    await redis.set(cacheKey, JSON.stringify(profileData), 'EX', 600); // 10 mins
   }
 
-  // 2️⃣ Fetch user (for verified badge)
-  const user = await User.findById(userId).select('isTopperVerified');
-  
-  // 3️⃣ Check if following
+  // 3️⃣ Check if following - Always dynamic
   let isFollowing = false;
   if (viewerId) {
      isFollowing = !!(await Follow.exists({ followerId: viewerId, followingId: userId }));
   }
-
-  // 4️⃣ Fetch Latest Uploads (Notes)
-  const notes = await Note.find({
-    topperId: userId,
-    status: 'PUBLISHED',
-  })
-  .select('subject chapterName class price stats previewImages')
-  .sort({ createdAt: -1 })
-  .limit(3)
-  .lean();
-
-  const latestUploads = notes.map(n => ({
-    id: n._id,
-    title: `${n.subject} - ${n.chapterName}`,
-    subject: n.subject,
-    price: n.price,
-    rating: n.stats?.ratingAvg || 0,
-    coverImage: n.previewImages?.[0] || null
-  }));
-
-  // 5️⃣ Prepare response (shape exactly for UI)
-  return {
-    userId: profile.userId,
-    fullName: `${profile.firstName} ${profile.lastName}`,
-    profilePhoto: profile.profilePhoto,
-    verified: user?.isTopperVerified || false,
-    isFollowing,
-
-    achievements: profile.achievements,
-
-    stats: {
-      followers: profile.stats?.followersCount || 0,
-      rating: {
-        average: profile.stats?.rating?.average || 0,
-        count: profile.stats?.rating?.count || 0,
-      },
-      totalNotes: profile.stats?.totalNotes || 0,
-      totalSold: profile.stats?.totalSold || 0,
-    },
-
-    about: profile.shortBio,
-    latestUploads,
-  };
+  return { ...profileData, isFollowing };
 };
-
-const redis = require('../../config/redis');
 
 // ... existing code ...
 
@@ -273,6 +289,10 @@ exports.followTopper = async (studentId, topperId) => {
     await Follow.create({ followerId: studentId, followingId: topperId });
     // Update stats: increment followers
     await TopperProfile.findOneAndUpdate({ userId: topperId }, { $inc: { 'stats.followersCount': 1 } });
+    
+    // 🧹 Invalidate Cache
+    await redis.del(`topper:profile:${topperId}`);
+    
     return { following: true, message: "Followed successfully" };
   }
 };
@@ -311,3 +331,65 @@ exports.getTopperFollowers = async (topperId) => {
   });
 };
 
+exports.getMyProfile = async (userId) => {
+  const profile = await TopperProfile.findOne({ userId }).lean();
+  if (!profile) return null;
+
+  // 📈 Calculate real-time stats
+  const totalNotes = await Note.countDocuments({ topperId: userId });
+  
+  const now = new Date();
+  const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
+
+  const advancedStats = await Order.aggregate([
+    { $match: { topperId: userId, paymentStatus: 'SUCCESS' } },
+    {
+      $facet: {
+        total: [
+          { $group: { _id: null, earnings: { $sum: '$amountPaid' }, count: { $sum: 1 } } }
+        ],
+        thisMonth: [
+          { $match: { createdAt: { $gte: startOfMonth } } },
+          { $group: { _id: null, earnings: { $sum: '$amountPaid' } } }
+        ],
+        pending: [
+          { $match: { createdAt: { $gte: new Date(now - 2 * 24 * 60 * 60 * 1000) } } }, // Last 48h
+          { $group: { _id: null, earnings: { $sum: '$amountPaid' } } }
+        ]
+      }
+    }
+  ]);
+
+  const earnings = advancedStats[0]?.total[0]?.earnings || 0;
+  const soldCount = advancedStats[0]?.total[0]?.count || 0;
+  const thisMonthEarnings = advancedStats[0]?.thisMonth[0]?.earnings || 0;
+  const pendingEarnings = advancedStats[0]?.pending[0]?.earnings || 0;
+
+  // Calculating Avg Rating from all published notes
+  const notes = await Note.find({ topperId: userId, status: 'PUBLISHED' }).select('stats.ratingAvg stats.ratingCount');
+  let totalRating = 0;
+  let totalCount = 0;
+  notes.forEach(n => {
+    if (n.stats?.ratingCount > 0) {
+      totalRating += (n.stats.ratingAvg * n.stats.ratingCount);
+      totalCount += n.stats.ratingCount;
+    }
+  });
+  const avgRating = totalCount > 0 ? (totalRating / totalCount).toFixed(1) : "0.0";
+
+  return {
+    ...profile,
+    stats: {
+      ...profile.stats,
+      totalNotes,
+      totalSold: soldCount,
+      totalEarnings: earnings,
+      thisMonthEarnings,
+      pendingEarnings,
+      rating: {
+        average: parseFloat(avgRating),
+        count: totalCount
+      }
+    }
+  };
+};

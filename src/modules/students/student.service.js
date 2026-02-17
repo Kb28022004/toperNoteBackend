@@ -43,3 +43,7 @@ exports.createStudent = async (userId, payload, file, req) => {
 
   return student;
 };
+
+exports.getStudentProfile = async (userId) => {
+  return await StudentProfile.findOne({ userId }).lean();
+};
