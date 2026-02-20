@@ -69,4 +69,12 @@ router.get(
   controller.getNoteDetails
 );
 
+// Get purchased notes (Library)
+router.get(
+  '/purchased/me',
+  auth,
+  role('STUDENT'),
+  controller.getPurchasedNotes
+);
+
 module.exports = router;

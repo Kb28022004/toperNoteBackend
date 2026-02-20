@@ -1,0 +1,18 @@
+* Host localhost:8000 was resolved.
+* IPv6: ::1
+* IPv4: 127.0.0.1
+  % Total    % Received % Xferd  Average Speed   Time    Time     Time  Current
+                                 Dload  Upload   Total   Spent    Left  Speed
+  0     0    0     0    0     0      0      0 --:--:-- --:--:-- --:--:--     0*   Trying [::1]:8000...
+* Connected to localhost (::1) port 8000
+> GET /api/v1/toppers HTTP/1.1
+> Host: localhost:8000
+> User-Agent: curl/8.7.1
+> Accept: */*
+> Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpZCI6IjY5OTQwMDc4NTZmNWM4NDY1N2QxZTI5NSIsInJvbGUiOiJTVFVERU5UIiwiaWF0IjoxNzcxNTg5OTUwfQ.hVSstmaLU45-mRC5-Th3l838GrvIK6O-91dq7agqBeY
+> 
+* Request completely sent off
+* Empty reply from server
+  0     0    0     0    0     0      0      0 --:--:-- --:--:-- --:--:--     0
+* Closing connection
+curl: (52) Empty reply from server

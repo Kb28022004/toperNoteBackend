@@ -82,6 +82,8 @@ exports.getApprovedNotes = async (req, res, next) => {
   try {
     // Pass full user object for role-based personalization
     const result = await noteService.getAllApprovedNotes(req.user, req.query);
+
+    console.log("result",result.notes);
     
     res.json({
       success: true,
@@ -111,6 +113,19 @@ exports.getMyNotes = async (req, res, next) => {
     res.json({
       success: true,
       data: notes,
+    });
+  } catch (err) {
+    next(err);
+  }
+};
+
+exports.getPurchasedNotes = async (req, res, next) => {
+  try {
+    const { search, page, limit } = req.query;
+    const result = await noteService.getPurchasedNotes(req.user.id, { search, page, limit });
+    res.json({
+      success: true,
+      data: result,
     });
   } catch (err) {
     next(err);

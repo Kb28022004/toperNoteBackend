@@ -56,9 +56,11 @@ router.post(
 // Usually public is fine, or restricted to auth users. Let's make it public for now or same as profile.
 router.get('/:userId/followers', controller.getTopperFollowers);
 
+const authOptional = require('../../middlewares/auth.optional.middleware');
+
 // 🌍 Public profile
 router.get('/me', auth, controller.getMyProfile);
-router.get('/', controller.getAllToppers);
-router.get('/:userId/public', controller.getPublicProfile);
+router.get('/', authOptional, controller.getAllToppers);
+router.get('/:userId/public', authOptional, controller.getPublicProfile);
 
 module.exports = router;

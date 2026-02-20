@@ -49,7 +49,8 @@ exports.getPublicProfile = async (req, res, next) => {
   try {
     const profile = await topperService.getPublicProfile(
       req.params.userId,
-      req.user?.id
+      req.user?.id,
+      req 
     );
 
     res.json({

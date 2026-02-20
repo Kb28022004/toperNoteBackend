@@ -11,5 +11,6 @@ router.use('/toppers', require('../modules/toppers/topper.routes'));
 router.use('/admin', require('../modules/admin/admin.routes'));
 router.use('/notes', require('../modules/notes/notes.routes'));
 router.use('/reviews', require('../modules/reviews/review.routes'));
+router.use('/payments', require('../modules/payments/payment.routes'));
 
 module.exports = router;

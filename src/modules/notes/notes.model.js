@@ -56,6 +56,18 @@ publicPreviewCount: {
       required: true,
     },
 
+    description: {
+      type: String,
+      trim: true,
+    },
+
+    tableOfContents: [
+      {
+        title: { type: String, required: true },
+        pageNumber: { type: String }, // e.g., "1-5" or "10"
+      },
+    ],
+
     // 💰 PRICING
     price: {
       type: Number,

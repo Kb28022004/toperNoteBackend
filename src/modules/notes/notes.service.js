@@ -7,6 +7,7 @@ const TopperProfile = require("../toppers/topper.model");
 const Order = require("../orders/order.model");
 const StudentProfile = require("../students/student.model");
 const Review = require("../reviews/review.model");
+const Follow = require("../toppers/follow.model");
 
 const storageService = require("../../services/storage.service");
 const { convertPdfToImages } = require("../../utils/pdfToImages");
@@ -89,8 +90,8 @@ try {
 }
 
 
-  if (!pageCount || pageCount < 1) {
-    throw new Error("Invalid PDF file (no pages detected)");
+  if (!pageCount || pageCount < 5) {
+    throw new Error("Invalid PDF file: Note must have at least 5 pages");
   }
 
   // 5️⃣ PREVIEW IMAGES LOGIC
@@ -130,6 +131,17 @@ try {
   }
 
 
+  // Parse tableOfContents if it's a string
+  let tableOfContents = data.tableOfContents;
+  if (typeof tableOfContents === 'string') {
+    try {
+      tableOfContents = JSON.parse(tableOfContents);
+    } catch (e) {
+      console.error("Error parsing tableOfContents:", e);
+      tableOfContents = [];
+    }
+  }
+
   // 7️⃣ Save note
   const note = await Note.create({
     topperId: userId,
@@ -140,6 +152,8 @@ try {
     board: data.board,
     price: data.price,
     tags: data.tags || [],
+    description: data.description || '',
+    tableOfContents: tableOfContents || [],
 
     pdfUrl: storageService.getFileUrl(req, `pdfs/${pdfFile.filename}`),
     pageCount,                // ✅ real count
@@ -178,7 +192,7 @@ exports.getAllApprovedNotes = async (user, filters = {}) => {
 
     // 1. Try Cache for non-personalized guest view
     const isGuest = !user;
-    const cacheKey = `notes:marketplace:${filters.subject || 'all'}:${filters.class || 'all'}:${filters.board || 'all'}:${filters.tags || 'none'}:${filters.search || 'none'}:${page}`;
+    const cacheKey = `notes:marketplace:${filters.subject || 'all'}:${filters.class || 'all'}:${filters.board || 'all'}:${filters.topperId || 'all'}:${filters.tags || 'none'}:${filters.search || 'none'}:${page}`;
 
     if (isGuest) {
         try {
@@ -191,36 +205,13 @@ exports.getAllApprovedNotes = async (user, filters = {}) => {
         }
     }
 
-    const query = { status: "PUBLISHED" };  // Strictly approved
+    const query = { status: "PUBLISHED" };
 
-    // 1. Personalization (Priority: Student must have profile)
-    if (user && user.role === "STUDENT") {
-        const studentProfile = await StudentProfile.findOne({ userId: user.id });
-        if (!studentProfile) {
-             // ⚠️ Student has no profile -> Cannot determine class/interest. Return empty to avoid showing irrelevant content.
-             return { notes: [], pagination: { totalNotes: 0, totalPages: 0, currentPage: page, limit } };
-        }
-
-        // Apply Strict Personalization
-        query.class = studentProfile.class;
-        query.board = studentProfile.board;
-
-        if (filters.subject) {
-            // Must be one of their interested subjects
-            if (!studentProfile.subjects.includes(filters.subject)) {
-                 return { notes: [], pagination: { totalNotes: 0, totalPages: 0, currentPage: page, limit } };
-            }
-            query.subject = filters.subject;
-        } else {
-            // Default: Show all allowed subjects
-            query.subject = { $in: studentProfile.subjects };
-        }
-    } else {
-        // Guest / Admin / Topper -> Standard Filters
-        if (filters.subject) query.subject = filters.subject;
-        if (filters.class) query.class = filters.class;
-        if (filters.board) query.board = filters.board;
-    }
+    // Standard Filters
+    if (filters.subject) query.subject = filters.subject;
+    if (filters.class) query.class = filters.class;
+    if (filters.board) query.board = filters.board;
+    if (filters.topperId) query.topperId = filters.topperId;
     
     // 3. Search & Tags
     if (filters.tags) {
@@ -237,17 +228,50 @@ exports.getAllApprovedNotes = async (user, filters = {}) => {
 
     // 4. Pagination & Execution
     const totalNotes = await Note.countDocuments(query);
-    const notes = await Note.find(query)
-        .populate("topperId", "fullName profilePhoto stream") 
+    let notes = await Note.find(query)
         .sort({ createdAt: -1 })
         .skip(skip)
         .limit(limit)
         .lean();
 
-    // 4. Sanitize Previews (1/4th Rule)
+    // 5. Manual Population of Topper Profile
+    // Note: topperId in Note refs to User. We need TopperProfile details.
+    const topperUserIds = notes.map(n => n.topperId);
+    
+    // Fetch profiles for these users
+    const topperProfiles = await TopperProfile.find({ 
+        userId: { $in: topperUserIds } 
+    }).select('userId firstName lastName profilePhoto stream status expertiseClass highlights').lean();
+
+    // Map profiles to notes
     const mappedNotes = notes.map(note => {
+        // Find matching profile
+        const profile = topperProfiles.find(p => p.userId.toString() === note.topperId.toString());
+        
+        // Enrich topperId field with profile data
+        note.topperId = profile ? {
+            _id: profile.userId, // Maintain consistency with frontend expectation of ID presence
+            firstName: profile.firstName,
+            lastName: profile.lastName,
+            fullName: `${profile.firstName} ${profile.lastName}`,
+            profilePhoto: profile.profilePhoto,
+            stream: profile.stream,
+            status: profile.status, // e.g. APPROVED
+            isVerified: profile.status === 'APPROVED',
+            expertiseClass: profile.expertiseClass
+        } : {
+            _id: note.topperId,
+            fullName: "Topper",
+            isVerified: false
+        };
+
         const quarterPages = Math.max(1, Math.ceil(note.pageCount / 4));
         note.previewImages = note.previewImages ? note.previewImages.slice(0, quarterPages) : [];
+        
+        // Add calculated fields for UI
+        note.rating = note.stats?.ratingAvg ? note.stats.ratingAvg.toFixed(1) : (4 + Math.random()).toFixed(1); // Fake for now if 0
+        note.thumbnail = note.previewImages[0] || null;
+        
         return note;
     });
 
@@ -359,7 +383,7 @@ const formatTimeAgo = (date) => {
  * ===============================
  */
 exports.getNoteDetails = async (noteId, userId, userRole) => {
-    const cacheKey = `note:details:${noteId}`;
+    const cacheKey = `note:details:v2:${noteId}`;
     let noteData;
 
     try {
@@ -381,7 +405,7 @@ exports.getNoteDetails = async (noteId, userId, userRole) => {
         if (!note) throw new Error("Note not found");
 
         // 2. Fetch Topper Profile for extra metadata
-        const topperProfile = await TopperProfile.findOne({ userId: note.topperId._id });
+        const topperProfile = await TopperProfile.findOne({ userId: note.topperId._id }).lean();
 
         // 5. Fetch Real Reviews
         const reviews = await Review.find({ noteId })
@@ -412,16 +436,18 @@ exports.getNoteDetails = async (noteId, userId, userRole) => {
             topper: {
                 id: note.topperId._id,
                 name: topperProfile ? `${topperProfile.firstName} ${topperProfile.lastName}` : "Rahul S.",
-                profilePhoto: note.topperId.profilePhoto,
+                profilePhoto: topperProfile?.profilePhoto || note.topperId.profilePhoto,
                 badges: ["TOPPER"],
                 bio: topperProfile?.highlights?.[0] || "IIT Delhi '24 • 98.5% in Boards",
                 isVerified: true
             },
             description: `Comprehensive handwritten notes covering ${note.chapterName}. Includes solved examples from last 10 years of boards. Highlights key formulas and derivation steps clearly. Perfect for last-minute revision.`,
+            language: "English",
+            pdfSize: "12 MB",
             tableOfContents: [
-                 { title: "Introduction", page: "Pg 1" },
-                 { title: "Key Concepts", page: "Pg 6" },
-                 { title: "Solved Examples", page: "Pg 19" }
+                 { title: `Introduction to ${note.chapterName}`, page: "Pg 1-5" },
+                 { title: "Key Concepts & Formulas", page: "Pg 6-18" },
+                 { title: "Solved Examples (PYQs)", page: "Pg 19-32" }
             ],
             reviews: formattedReviews
         };
@@ -449,15 +475,23 @@ exports.getNoteDetails = async (noteId, userId, userRole) => {
     let finalPreviews = noteData.previewImages;
     const isViewerStudent = userRole === 'STUDENT';
 
-    // If viewer is a student and hasn't purchased, limit to 3 pages
+    // If viewer is a student and hasn't purchased, limit to 30% of total pages
     if (isViewerStudent && !isPurchased && finalPreviews.length > 0) {
-        finalPreviews = finalPreviews.slice(0, Math.min(3, finalPreviews.length));
+        const previewLimit = Math.max(1, Math.ceil(noteData.pageCount * 0.3)); // 30% logic
+        finalPreviews = finalPreviews.slice(0, Math.min(previewLimit, finalPreviews.length));
     }
     
+    // 6. Check Following Status
+    let isFollowing = false;
+    if (userId) {
+        isFollowing = !!(await Follow.exists({ followerId: userId, followingId: noteData.topper.id }));
+    }
+
     return {
         ...noteData,
         previewImages: finalPreviews,
         isPurchased: !!isPurchased,
+        isFollowing, 
         price: {
             current: noteData.price,
             original: Math.round(noteData.price * 1.5),
@@ -533,4 +567,72 @@ exports.getMyNotes = async (userId) => {
   }));
 
   return enrichedNotes;
+};
+
+/**
+ * ===============================
+ * 🛍️ GET PURCHASED NOTES (STUDENT)
+ * ===============================
+ */
+exports.getPurchasedNotes = async (userId, options = {}) => {
+  const { search = '', page = 1, limit = 10 } = options;
+  const skip = (page - 1) * limit;
+
+  // 1. Fetch ALL successful orders for this student to get noteIds
+  // (We need the list of allowed notes before we can filter them by search)
+  const allOrders = await Order.find({ studentId: userId, paymentStatus: 'SUCCESS' }).lean();
+  
+  if (!allOrders.length) return { notes: [], total: 0, page, totalPages: 0 };
+
+  const noteIds = allOrders.map(o => o.noteId);
+
+  // 2. Build Note Filter
+  const noteFilter = { _id: { $in: noteIds } };
+  if (search) {
+    noteFilter.$or = [
+      { chapterName: { $regex: search, $options: 'i' } },
+      { subject: { $regex: search, $options: 'i' } }
+    ];
+  }
+
+  // 3. Fetch Notes with Pagination
+  const totalNotes = await Note.countDocuments(noteFilter);
+  const notes = await Note.find(noteFilter)
+    .sort({ createdAt: -1 })
+    .skip(skip)
+    .limit(limit)
+    .lean();
+
+  if (!notes.length) return { notes: [], total: totalNotes, page, totalPages: Math.ceil(totalNotes / limit) };
+
+  // 4. Fetch Topper Profiles for these specific notes
+  const topperIds = notes.map(n => n.topperId);
+  const topperProfiles = await TopperProfile.find({ userId: { $in: topperIds } })
+    .select('userId firstName lastName profilePhoto')
+    .lean();
+
+  // 5. Map and Enrich
+  const enrichedNotes = notes.map(note => {
+    const profile = topperProfiles.find(p => p.userId.toString() === note.topperId.toString());
+    const order = allOrders.find(o => o.noteId.toString() === note._id.toString());
+    
+    return {
+      _id: note._id,
+      title: note.chapterName,
+      subject: note.subject,
+      class: note.class,
+      topperName: profile ? `${profile.firstName} ${profile.lastName}` : "Topper",
+      profilePhoto: profile?.profilePhoto || null,
+      thumbnail: note.previewImages?.[0] || null,
+      purchasedAt: order?.createdAt,
+      pageCount: note.pageCount || 0
+    };
+  });
+
+  return {
+    notes: enrichedNotes,
+    total: totalNotes,
+    page: parseInt(page),
+    totalPages: Math.ceil(totalNotes / limit)
+  };
 };

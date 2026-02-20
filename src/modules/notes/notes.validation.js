@@ -8,4 +8,14 @@ exports.createNoteSchema = Joi.object({
 
   price: Joi.number().min(0).max(499).required(),
   tags: Joi.array().items(Joi.string()).optional(),
+  description: Joi.string().allow('', null).optional(),
+  tableOfContents: Joi.alternatives().try(
+    Joi.array().items(
+      Joi.object({
+        title: Joi.string().required(),
+        pageNumber: Joi.string().optional().allow('', null),
+      })
+    ),
+    Joi.string() // Allow string if it's sent as JSON string in FormData
+  ).optional(),
 });

@@ -9,7 +9,7 @@ exports.apiLimiter = rateLimit({
     //     sendCommand: (...args) => redis.call(...args),
     // }),
     windowMs: 15 * 60 * 1000, // 15 minutes
-    max: 100, // Limit each IP to 100 requests per `window`
+    max: 1000, // Increased for development/testing
     message: {
         success: false,
         message: "Too many requests from this IP, please try again after 15 minutes",
@@ -25,7 +25,7 @@ exports.authLimiter = rateLimit({
     //     prefix: 'rl-auth:'
     // }),
     windowMs: 60 * 60 * 1000, // 1 hour
-    max: 50, // Limit each IP to 50 OTP requests per hour (Relaxed for Dev)
+    max: 500, // Increased for development/testing
     message: {
         success: false,
         message: "Too many login attempts, please try again after an hour",
