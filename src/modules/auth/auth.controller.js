@@ -11,7 +11,6 @@ exports.sendOtp = async (req, res, next) => {
     }
 
     const result = await authService.sendOtp(phone, role);
-    console.log(`✅ OTP sent successfully to ${phone} for role ${role}`);
 
     res.status(200).json({
       success: true,

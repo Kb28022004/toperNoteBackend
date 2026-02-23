@@ -98,6 +98,7 @@ publicPreviewCount: {
       ratingCount: { type: Number, default: 0 },
     },
   },
+  { timestamps: true }
 );
 
 // 🚀 PERFORMANCE INDEXES (FOR 1M+ USERS)

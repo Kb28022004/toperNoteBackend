@@ -3,6 +3,8 @@ const User = require('../users/user.model');
 const storageService = require('../../services/storage.service');
 const Order = require('../orders/order.model');
 const Note = require('../notes/notes.model');
+const TopperProfile = require('../toppers/topper.model');
+const Follow = require('../toppers/follow.model');
 
 exports.createStudent = async (userId, payload, file, req) => {
   const user = await User.findById(userId);
@@ -55,8 +57,9 @@ exports.getStudentProfile = async (userId) => {
   const notesPurchasedCount = await Order.countDocuments({ studentId: userId, paymentStatus: 'SUCCESS' });
   const subjectsCoveredCount = profile.subjects?.length || 0;
   
-  // 📚 Note: "Hours Studied" is a placeholder since we don't have session tracking yet
-  const hoursStudied = Math.floor(notesPurchasedCount * 4.5); 
+  // 📚 Actual usage stats from session tracking
+  const actualSeconds = profile.stats?.totalTimeSpent || 0;
+  const hoursStudied = parseFloat((actualSeconds / 3600).toFixed(1));
 
   // 2. Fetch Recent Activity (Last 5 purchases)
   const recentOrders = await Order.find({ studentId: userId, paymentStatus: 'SUCCESS' })
@@ -88,4 +91,113 @@ exports.getStudentProfile = async (userId) => {
     },
     recentActivity
   };
+};
+
+exports.getFollowedToppers = async (studentId, query = {}) => {
+  const { search, expertiseClass, stream } = query;
+
+  // 1. Get all following IDs for this student
+  const follows = await Follow.find({ followerId: studentId }).lean();
+  if (follows.length === 0) return [];
+
+  const followingIds = follows.map((f) => f.followingId);
+
+  // 2. Build filter for TopperProfile
+  const filter = { userId: { $in: followingIds } };
+
+  if (search) {
+    filter.$or = [
+      { firstName: { $regex: search, $options: 'i' } },
+      { lastName: { $regex: search, $options: 'i' } },
+      { shortBio: { $regex: search, $options: 'i' } },
+    ];
+  }
+
+  if (expertiseClass) {
+    filter.expertiseClass = expertiseClass;
+  }
+
+  if (stream) {
+    filter.stream = stream;
+  }
+
+  const topperProfiles = await TopperProfile.find(filter)
+    .select(
+      'userId firstName lastName profilePhoto expertiseClass stream shortBio stats'
+    )
+    .sort({ createdAt: -1 })
+    .lean();
+
+  return topperProfiles.map((profile) => {
+    const follow = follows.find(
+      (f) => f.followingId.toString() === profile.userId.toString()
+    );
+    return {
+      topperId: profile.userId,
+      name: `${profile.firstName} ${profile.lastName}`,
+      profilePhoto: profile.profilePhoto || null,
+      expertise:
+        profile.expertiseClass === '10'
+          ? `Class 10 Topper`
+          : `Class 12 • ${profile.stream || 'Topper'}`,
+      class: profile.expertiseClass,
+      stream: profile.stream,
+      followedAt: follow?.createdAt,
+    };
+  });
+};
+
+exports.updateUsageStats = async (userId, { timeSpent }) => {
+  const profile = await StudentProfile.findOne({ userId });
+  if (!profile) throw new Error('Student profile not found');
+
+  profile.stats.totalTimeSpent += parseInt(timeSpent || 0);
+  profile.stats.lastActiveAt = new Date();
+  
+  await profile.save();
+  return profile;
+};
+
+exports.updateProfilePicture = async (userId, file, req) => {
+  const profile = await StudentProfile.findOne({ userId });
+  if (!profile) {
+    const err = new Error('Student profile not found');
+    err.status = 404;
+    throw err;
+  }
+
+  let profilePhoto;
+  if (file) {
+    profilePhoto = storageService.getFileUrl(req, `profiles/${file.filename}`);
+    profile.profilePhoto = profilePhoto;
+    await profile.save();
+  }
+
+  return profile;
+};
+
+exports.updateAcademicProfile = async (userId, payload) => {
+  const profile = await StudentProfile.findOneAndUpdate(
+    { userId },
+    { $set: payload },
+    { new: true }
+  ).lean();
+
+  if (!profile) {
+    const err = new Error('Student profile not found');
+    err.status = 404;
+    throw err;
+  }
+
+  return profile;
+};
+
+exports.deleteAccount = async (userId) => {
+  // 1. Delete Student Profile
+  await StudentProfile.findOneAndDelete({ userId });
+
+  // 2. Delete User Account
+  await User.findByIdAndDelete(userId);
+
+  return { success: true };
 };

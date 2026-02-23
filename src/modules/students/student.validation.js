@@ -27,3 +27,12 @@ exports.createStudentSchema = Joi.object({
     .min(3)
     .required(),
 });
+
+exports.updateProfileSchema = Joi.object({
+  fullName: Joi.string().min(3).max(50).optional(),
+  class: Joi.string().valid('6', '7', '8', '9', '10', '11', '12').optional(),
+  board: Joi.string().valid('CBSE', 'ICSE', 'State Board').optional(),
+  medium: Joi.string().valid('ENGLISH', 'HINDI').optional(),
+  stream: Joi.string().valid('Science (PCM)', 'Science (PCB)', 'Science (PCMB)', 'Commerce', 'Arts').optional(),
+  subjects: Joi.array().items(Joi.string().min(2)).min(3).optional(),
+});

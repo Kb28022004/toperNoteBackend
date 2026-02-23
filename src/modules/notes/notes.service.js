@@ -1,3 +1,4 @@
+const mongoose = require('mongoose');
 const fs = require("fs");
 const path = require("path");
 const pdfParse = require("pdf-parse");
@@ -192,7 +193,7 @@ exports.getAllApprovedNotes = async (user, filters = {}) => {
 
     // 1. Try Cache for non-personalized guest view
     const isGuest = !user;
-    const cacheKey = `notes:marketplace:${filters.subject || 'all'}:${filters.class || 'all'}:${filters.board || 'all'}:${filters.topperId || 'all'}:${filters.tags || 'none'}:${filters.search || 'none'}:${page}`;
+    const cacheKey = `notes:marketplace:${filters.subject || 'all'}:${filters.class || 'all'}:${filters.board || 'all'}:${filters.topperId || 'all'}:${filters.tags || 'none'}:${filters.search || 'none'}:${filters.sortBy || 'newest'}:${filters.timeRange || 'all'}:${page}`;
 
     if (isGuest) {
         try {
@@ -213,6 +214,27 @@ exports.getAllApprovedNotes = async (user, filters = {}) => {
     if (filters.board) query.board = filters.board;
     if (filters.topperId) query.topperId = filters.topperId;
     
+    // Time Range Filter — using ObjectId timestamp (works for ALL existing docs, even without createdAt)
+    if (filters.timeRange && filters.timeRange !== 'all') {
+        let dateLimit;
+
+        if (filters.timeRange === '24h') {
+            dateLimit = new Date(Date.now() - (24 * 60 * 60 * 1000));
+        } else if (filters.timeRange === '7d') {
+            dateLimit = new Date(Date.now() - (7 * 24 * 60 * 60 * 1000));
+        } else if (filters.timeRange === '1m') {
+            const d = new Date();
+            d.setMonth(d.getMonth() - 1);
+            dateLimit = d;
+        }
+
+        if (dateLimit) {
+            // Convert date to ObjectId — works even on documents without a createdAt field
+            const minId = mongoose.Types.ObjectId.createFromTime(Math.floor(dateLimit.getTime() / 1000));
+            query._id = { $gte: minId };
+        }
+    }
+
     // 3. Search & Tags
     if (filters.tags) {
         query.tags = { $in: Array.isArray(filters.tags) ? filters.tags : [filters.tags] };
@@ -226,10 +248,20 @@ exports.getAllApprovedNotes = async (user, filters = {}) => {
         ];
     }
 
-    // 4. Pagination & Execution
+    // 4. Sorting logic
+    let sortOptions = { createdAt: -1 }; // Default: Newest
+    if (filters.sortBy === 'price_low') {
+        sortOptions = { price: 1 };
+    } else if (filters.sortBy === 'price_high') {
+        sortOptions = { price: -1 };
+    } else if (filters.sortBy === 'rating') {
+        sortOptions = { 'stats.ratingAvg': -1 };
+    }
+
+    // 5. Pagination & Execution
     const totalNotes = await Note.countDocuments(query);
     let notes = await Note.find(query)
-        .sort({ createdAt: -1 })
+        .sort(sortOptions)
         .skip(skip)
         .limit(limit)
         .lean();
@@ -242,6 +274,16 @@ exports.getAllApprovedNotes = async (user, filters = {}) => {
     const topperProfiles = await TopperProfile.find({ 
         userId: { $in: topperUserIds } 
     }).select('userId firstName lastName profilePhoto stream status expertiseClass highlights').lean();
+
+    // 6. Check for purchases if user is logged in
+    let purchasedNoteIds = [];
+    if (user && user.id) {
+        const orders = await Order.find({ 
+            studentId: user.id, 
+            paymentStatus: "SUCCESS" 
+        }).select('noteId').lean();
+        purchasedNoteIds = orders.map(o => o.noteId.toString());
+    }
 
     // Map profiles to notes
     const mappedNotes = notes.map(note => {
@@ -271,6 +313,7 @@ exports.getAllApprovedNotes = async (user, filters = {}) => {
         // Add calculated fields for UI
         note.rating = note.stats?.ratingAvg ? note.stats.ratingAvg.toFixed(1) : (4 + Math.random()).toFixed(1); // Fake for now if 0
         note.thumbnail = note.previewImages[0] || null;
+        note.isPurchased = purchasedNoteIds.includes(note._id.toString());
         
         return note;
     });
@@ -383,7 +426,7 @@ const formatTimeAgo = (date) => {
  * ===============================
  */
 exports.getNoteDetails = async (noteId, userId, userRole) => {
-    const cacheKey = `note:details:v2:${noteId}`;
+    const cacheKey = `note:details:v5:${noteId}`;
     let noteData;
 
     try {
@@ -397,12 +440,16 @@ exports.getNoteDetails = async (noteId, userId, userRole) => {
         console.error("Redis Cache Error (Get Note):", err.message);
     }
     
-    if (!noteData) {
+    // Fetch if not in cache OR if cache is missing critical rawPdfUrl field
+    if (!noteData || !noteData.rawPdfUrl) {
         // 1. Fetch Note + Topper
         const note = await Note.findOne({ _id: noteId, status: "PUBLISHED" })
             .populate("topperId", "firstName lastName profilePhoto stream highlights isVerified");
         
         if (!note) throw new Error("Note not found");
+
+        // ... existing noteData construction ...
+        // (Assuming I should re-fetch and re-cache)
 
         // 2. Fetch Topper Profile for extra metadata
         const topperProfile = await TopperProfile.findOne({ userId: note.topperId._id }).lean();
@@ -449,7 +496,8 @@ exports.getNoteDetails = async (noteId, userId, userRole) => {
                  { title: "Key Concepts & Formulas", page: "Pg 6-18" },
                  { title: "Solved Examples (PYQs)", page: "Pg 19-32" }
             ],
-            reviews: formattedReviews
+            reviews: formattedReviews,
+            rawPdfUrl: note.pdfUrl
         };
 
         try {
@@ -492,6 +540,7 @@ exports.getNoteDetails = async (noteId, userId, userRole) => {
         previewImages: finalPreviews,
         isPurchased: !!isPurchased,
         isFollowing, 
+        pdfUrl: isPurchased ? noteData.rawPdfUrl : null, // Internal field
         price: {
             current: noteData.price,
             original: Math.round(noteData.price * 1.5),
@@ -625,7 +674,8 @@ exports.getPurchasedNotes = async (userId, options = {}) => {
       profilePhoto: profile?.profilePhoto || null,
       thumbnail: note.previewImages?.[0] || null,
       purchasedAt: order?.createdAt,
-      pageCount: note.pageCount || 0
+      pageCount: note.pageCount || 0,
+      pdfUrl: note.pdfUrl
     };
   });
 

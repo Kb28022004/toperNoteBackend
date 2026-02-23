@@ -121,3 +121,16 @@ exports.previewNote = async (req, res, next) => {
     next(err);
   }
 }
+
+// Student Usage
+exports.getStudentUsage = async (req, res, next) => {
+  try {
+    const data = await adminService.getDetailedUsage();
+    res.json({
+      success: true,
+      data
+    });
+  } catch (err) {
+    next(err);
+  }
+};

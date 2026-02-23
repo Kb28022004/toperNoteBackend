@@ -71,7 +71,6 @@ exports.verifyPayment = async (orderId, paymentId, signature) => {
       { new: true }
     );
     
-    console.log(`Payment Verified. Order: ${order._id}, Note: ${order.noteId}, Topper: ${order.topperId}`);
 
     // 📊 Update Topper Stats (Increment Total Sold)
     const updateResult = await TopperProfile.findOneAndUpdate(
@@ -80,13 +79,11 @@ exports.verifyPayment = async (orderId, paymentId, signature) => {
        { new: true }
     );
     
-    console.log(`Topper Stats Updated: ${!!updateResult}`, updateResult?.stats?.totalSold);
 
     // Invalidate Topper Profile Cache
     try {
         if (redis.status === 'ready') {
             await redis.del(`topper:profile:${order.topperId}`);
-            console.log(`Invalidated cache for topper: ${order.topperId}`);
         }
     } catch (e) {
         console.warn("Redis delete failed:", e);
@@ -99,4 +96,77 @@ exports.verifyPayment = async (orderId, paymentId, signature) => {
   } else {
     throw new Error('Invalid payment signature');
   }
+};
+
+/**
+ * ==========================================
+ * 💳 GET TRANSACTION HISTORY (STUDENT)
+ * ==========================================
+ */
+exports.getTransactionHistory = async (userId, filters = {}) => {
+  const page = Math.max(1, parseInt(filters.page) || 1);
+  const limit = Math.max(1, parseInt(filters.limit) || 10);
+  const skip = (page - 1) * limit;
+
+  const query = { studentId: userId };
+  
+  if (filters.status) {
+    query.paymentStatus = filters.status;
+  }
+
+  // Fetch all orders first for stats
+  const allOrders = await Order.find({ studentId: userId, paymentStatus: 'SUCCESS' }).lean();
+  
+  // Stats calculation
+  const now = new Date();
+  const firstDayOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
+  const totalSpentThisMonth = allOrders
+    .filter(o => new Date(o.createdAt) >= firstDayOfMonth)
+    .reduce((sum, o) => sum + o.amountPaid, 0);
+
+  // Pagination and population
+  let orders = await Order.find(query)
+    .populate({
+      path: 'noteId',
+      select: 'subject chapterName thumbnail'
+    })
+    .sort({ createdAt: -1 })
+    .lean();
+
+  // Client-side search for note title (since it's a deep populate search)
+  if (filters.search) {
+    const searchLower = filters.search.toLowerCase();
+    orders = orders.filter(o => 
+      o.noteId?.subject?.toLowerCase().includes(searchLower) || 
+      o.noteId?.chapterName?.toLowerCase().includes(searchLower)
+    );
+  }
+
+  const totalFiltered = orders.length;
+  const paginatedOrders = orders.slice(skip, skip + limit);
+
+  const transactions = paginatedOrders.map(order => ({
+    id: order._id,
+    noteTitle: order.noteId ? `${order.noteId.subject}: ${order.noteId.chapterName}` : 'Deleted Note',
+    subject: order.noteId?.subject || 'N/A',
+    chapterName: order.noteId?.chapterName || 'N/A',
+    thumbnail: order.noteId?.thumbnail,
+    amount: order.amountPaid,
+    date: order.createdAt,
+    status: order.paymentStatus,
+    razorpayOrderId: order.razorpayOrderId,
+    razorpayPaymentId: order.razorpayPaymentId || 'N/A'
+  }));
+
+  return {
+    totalSpentThisMonth,
+    currentMonthName: now.toLocaleString('default', { month: 'long' }),
+    transactions,
+    pagination: {
+      total: totalFiltered,
+      page,
+      limit,
+      totalPages: Math.ceil(totalFiltered / limit)
+    }
+  };
 };

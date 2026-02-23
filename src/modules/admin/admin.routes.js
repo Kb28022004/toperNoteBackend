@@ -74,4 +74,12 @@ router.get(
   controller.previewNote
 );
 
+// Student Usage Stats
+router.get(
+  '/students/usage',
+  auth,
+  role('ADMIN'),
+  controller.getStudentUsage
+);
+
 module.exports = router;

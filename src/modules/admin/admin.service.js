@@ -5,6 +5,7 @@ const storageService = require('../../services/storage.service');
 const criteria = require("../../config/topperCriteria");
 const Note = require('../notes/notes.model');
 const redis = require("../../config/redis");
+const StudentProfile = require("../students/student.model");
 
 const avg = (arr) => arr.reduce((sum, s) => sum + s.marks, 0) / arr.length;
 
@@ -445,3 +446,19 @@ exports.getNotePreview = async (user, noteId) => {
     pageCount: note.pageCount,
   };
 }
+
+exports.getDetailedUsage = async () => {
+  const students = await StudentProfile.find({})
+    .select('fullName class board profilePhoto stats')
+    .sort({ 'stats.totalTimeSpent': -1 })
+    .limit(50)
+    .lean();
+
+  const totalAppTime = students.reduce((sum, s) => sum + (s.stats?.totalTimeSpent || 0), 0);
+
+  return {
+    totalStudents: students.length,
+    totalAppTime, // in seconds
+    topActiveStudents: students
+  };
+};

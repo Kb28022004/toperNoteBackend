@@ -32,3 +32,15 @@ exports.verifyPayment = async (req, res, next) => {
     next(err);
   }
 };
+
+exports.getHistory = async (req, res, next) => {
+  try {
+    const history = await paymentService.getTransactionHistory(req.user.id, req.query);
+    res.json({
+      success: true,
+      data: history
+    });
+  } catch (err) {
+    next(err);
+  }
+};

@@ -206,7 +206,6 @@ exports.getPublicProfile = async (userId, viewerId, req) => {
 
 // get all toppers (public call)
 exports.getAllToppers = async (user) => {
-    console.log(`DEBUG: getAllToppers start. User: ${user?.id || 'guest'}`);
     let enrichedToppers = [];
 
   // 1. Try to get from Cache
@@ -464,7 +463,6 @@ exports.getMyProfile = async (userId) => {
   const thisMonthEarnings = advancedStats[0]?.thisMonth[0]?.earnings || 0;
   const pendingEarnings = advancedStats[0]?.pending[0]?.earnings || 0;
 
-  console.log(`DEBUG: Stats for Topper ${userId} - Sold: ${soldCount}, Earnings: ${earnings}`);
 
   // Calculating Avg Rating from all published notes
   const notes = await Note.find({ topperId: userId, status: 'PUBLISHED' }).select('stats.ratingAvg stats.ratingCount');

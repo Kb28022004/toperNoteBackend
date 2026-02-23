@@ -57,6 +57,12 @@ const studentProfileSchema = new mongoose.Schema(
         message: 'At least 3 subjects are required',
       },
     },
+
+    stats: {
+      totalTimeSpent: { type: Number, default: 0 }, // in seconds
+      lastActiveAt: { type: Date, default: Date.now },
+      loginCount: { type: Number, default: 0 }
+    }
   },
   {
     timestamps: true,
