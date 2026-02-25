@@ -93,6 +93,38 @@ exports.getStudentProfile = async (userId) => {
   };
 };
 
+/**
+ * ==========================================
+ * 🔍 GET PUBLIC STUDENT PROFILE (FOR TOPPERS)
+ * ==========================================
+ */
+exports.getPublicStudentProfile = async (studentUserId) => {
+  const profile = await StudentProfile.findOne({ userId: studentUserId }).lean();
+  if (!profile) {
+    throw new Error('Student profile not found');
+  }
+
+  // Fetch basic stats for the public view
+  const notesPurchasedCount = await Order.countDocuments({ 
+    studentId: studentUserId, 
+    paymentStatus: 'SUCCESS' 
+  });
+
+  return {
+    fullName: profile.fullName,
+    class: profile.class,
+    board: profile.board,
+    stream: profile.stream,
+    profilePhoto: profile.profilePhoto || null,
+    subjects: profile.subjects || [],
+    medium: profile.medium,
+    stats: {
+      notesPurchased: notesPurchasedCount,
+      lastActive: profile.stats?.lastActiveAt
+    }
+  };
+};
+
 exports.getFollowedToppers = async (studentId, query = {}) => {
   const { search, expertiseClass, stream } = query;
 

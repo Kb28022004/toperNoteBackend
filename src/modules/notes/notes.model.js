@@ -102,8 +102,12 @@ publicPreviewCount: {
 );
 
 // 🚀 PERFORMANCE INDEXES (FOR 1M+ USERS)
-noteSchema.index({ status: 1, subject: 1, class: 1, createdAt: -1 });
-noteSchema.index({ status: 1, board: 1, class: 1 });
-noteSchema.index({ chapterName: 'text', subject: 'text' });
+noteSchema.index({ status: 1, subject: 1, class: 1, createdAt: -1 });  // main marketplace query
+noteSchema.index({ status: 1, board: 1, class: 1 });                    // board filter
+noteSchema.index({ chapterName: 'text', subject: 'text' });            // text search
+noteSchema.index({ topperId: 1, status: 1, createdAt: -1 });           // topper profile page
+noteSchema.index({ status: 1, 'stats.ratingAvg': -1 });                // sort by rating
+noteSchema.index({ status: 1, price: 1 });                             // sort by price asc
+noteSchema.index({ status: 1, price: -1 });                            // sort by price desc
 
 module.exports = mongoose.model('Note', noteSchema);

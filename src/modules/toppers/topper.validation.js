@@ -43,7 +43,10 @@ exports.verificationSchema = Joi.object({
     .items(
       Joi.object({
         subject: Joi.string().trim().min(2).required(),
-        marks: Joi.number().min(0).max(100).required(),
+        marks: Joi.number().min(90).max(100).required().messages({
+          'number.min': 'Each subject must have marks of at least 90 to qualify as a topper.',
+          'number.max': 'Marks cannot exceed 100.',
+        }),
       })
     )
     .min(1)

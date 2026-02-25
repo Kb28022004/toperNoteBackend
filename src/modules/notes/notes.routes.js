@@ -24,6 +24,14 @@ router.get(
   controller.getMyNotes
 );
 
+// Topper: Get full sales breakdown with buyer details
+router.get(
+  '/me/sales',
+  auth,
+  role('TOPPER'),
+  controller.getMySalesDetails
+);
+
 // Admin: Get all pending notes
 router.get(
   '/admin/pending',
@@ -75,6 +83,22 @@ router.get(
   auth,
   role('STUDENT'),
   controller.getPurchasedNotes
+);
+
+// Get favorite notes
+router.get(
+  '/favorites/me',
+  auth,
+  role('STUDENT'),
+  controller.getFavoriteNotes
+);
+
+// Toggle favorite note
+router.patch(
+  '/:noteId/favorite',
+  auth,
+  role('STUDENT'),
+  controller.toggleFavoriteNote
 );
 
 module.exports = router;

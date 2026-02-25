@@ -60,6 +60,7 @@ const authOptional = require('../../middlewares/auth.optional.middleware');
 
 // 🌍 Public profile
 router.get('/me', auth, controller.getMyProfile);
+router.patch('/profile-picture', auth, upload.single('photo'), controller.updateProfilePicture);
 router.get('/', authOptional, controller.getAllToppers);
 router.get('/:userId/public', authOptional, controller.getPublicProfile);
 

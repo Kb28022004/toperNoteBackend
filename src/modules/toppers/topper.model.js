@@ -160,6 +160,24 @@ const topperProfileSchema = new mongoose.Schema(
         },
       },
     },
+
+    // 💸 PAYOUT SETTINGS
+    payoutSettings: {
+      method: {
+        type: String,
+        enum: ['UPI', 'BANK'],
+      },
+      upiId: {
+        type: String,
+        trim: true,
+      },
+      bankDetails: {
+        accountNumber: String,
+        ifscCode: String,
+        accountHolderName: String,
+        bankName: String,
+      },
+    },
   },
   {
     timestamps: true,

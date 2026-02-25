@@ -134,3 +134,39 @@ exports.getStudentUsage = async (req, res, next) => {
     next(err);
   }
 };
+
+// 💳 Payout Management
+exports.getPayoutRequests = async (req, res, next) => {
+  try {
+    const { status, page, limit } = req.query;
+    const result = await adminService.getPayoutRequests({
+      status: status || 'PENDING',
+      page: parseInt(page) || 1,
+      limit: parseInt(limit) || 10
+    });
+    res.json({
+      success: true,
+      ...result
+    });
+  } catch (err) {
+    next(err);
+  }
+};
+
+exports.updatePayoutStatus = async (req, res, next) => {
+  try {
+    const { status, transactionId, adminRemarks } = req.body;
+    const result = await adminService.updatePayoutStatus(
+      req.params.id,
+      status,
+      transactionId,
+      adminRemarks
+    );
+    res.json({
+      success: true,
+      message: result
+    });
+  } catch (err) {
+    next(err);
+  }
+};

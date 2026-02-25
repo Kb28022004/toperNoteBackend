@@ -62,7 +62,11 @@ const studentProfileSchema = new mongoose.Schema(
       totalTimeSpent: { type: Number, default: 0 }, // in seconds
       lastActiveAt: { type: Date, default: Date.now },
       loginCount: { type: Number, default: 0 }
-    }
+    },
+    savedNotes: [{
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'Note'
+    }]
   },
   {
     timestamps: true,

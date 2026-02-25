@@ -92,7 +92,7 @@ exports.addReview = async (userId, noteId, rating, comment) => {
   // 6. Invalidate Cache
   try {
      if (redis.status === 'ready') {
-         await redis.del(`note:details:v2:${noteId}`); // Invalidate note detail cache
+         await redis.del(`note:details:v5:${noteId}`); // Fixed: Correct cache key version
      }
   } catch (e) {
       console.warn("Failed to clear cache:", e);
@@ -163,4 +163,156 @@ const updateTopperStats = async (topperId) => {
             'stats.rating.count': totalReviewCount
         }
     );
+};
+
+/**
+ * ===============================
+ * 📋 GET NOTE REVIEWS (PAGINATED)
+ * ===============================
+ */
+  exports.getNoteReviews = async (noteId, options = {}) => {
+  const page = Math.max(1, parseInt(options.page) || 1);
+  const limit = Math.max(1, parseInt(options.limit) || 20);
+  const skip = (page - 1) * limit;
+
+  // Use ObjectId for query
+  const noteObjectId = new mongoose.Types.ObjectId(noteId);
+
+  const reviews = await Review.find({ noteId: noteObjectId })
+    .populate({
+      path: 'studentId',
+      select: 'fullName profilePhoto userId'
+    })
+    .sort({ createdAt: -1 })
+    .skip(skip)
+    .limit(limit)
+    .lean();
+
+  const total = await Review.countDocuments({ noteId });
+
+  const formatTimeAgo = (date) => {
+    const seconds = Math.floor((new Date() - date) / 1000);
+    let interval = seconds / 31536000;
+    if (interval > 1) return Math.floor(interval) + "y";
+    interval = seconds / 2592000;
+    if (interval > 1) return Math.floor(interval) + "mo";
+    interval = seconds / 86400;
+    if (interval > 1) return Math.floor(interval) + "d";
+    interval = seconds / 3600;
+    if (interval > 1) return Math.floor(interval) + "h";
+    return "just now";
+  };
+
+  const formattedReviews = reviews.map(r => ({
+    id: r._id,
+    studentId: r.studentId?.userId,
+    user: r.studentId?.fullName || "Student",
+    profilePhoto: r.studentId?.profilePhoto || null,
+    rating: r.rating,
+    comment: r.comment,
+    daysAgo: formatTimeAgo(r.createdAt),
+    verifiedPurchase: r.isVerifiedPurchase
+  }));
+
+  return {
+    reviews: formattedReviews,
+    total,
+    page,
+    limit,
+    totalPages: Math.ceil(total / limit)
+  };
+};
+
+/**
+ * =====================================
+ * 📋 GET TOPPER REVIEWS (PAGINATED+)
+ * =====================================
+ * Fetches all reviews across ALL notes belonging to a specific topper.
+ */
+exports.getTopperReviews = async (topperId, options = {}) => {
+  const page = Math.max(1, parseInt(options.page) || 1);
+  const limit = Math.max(1, parseInt(options.limit) || 20);
+  const skip = (page - 1) * limit;
+  const search = options.search || '';
+  const rating = options.rating ? parseInt(options.rating) : null;
+  const sortBy = options.sortBy || 'newest';
+
+  // 1. Get all published note IDs for this topper
+  const notes = await Note.find({ topperId, status: 'PUBLISHED' }).select('_id');
+  const noteIds = notes.map(n => n._id);
+
+  if (noteIds.length === 0) {
+    return { reviews: [], total: 0, page, totalPages: 0 };
+  }
+
+  // 2. Build Query
+  let query = { noteId: { $in: noteIds } };
+  
+  if (search) {
+    query.comment = { $regex: search, $options: 'i' };
+  }
+  
+  if (rating) {
+    query.rating = rating;
+  }
+
+  // 3. Build Sort
+  let sort = { createdAt: -1 };
+  if (sortBy === 'oldest') sort = { createdAt: 1 };
+  if (sortBy === 'rating_high') sort = { rating: -1, createdAt: -1 };
+  if (sortBy === 'rating_low') sort = { rating: 1, createdAt: -1 };
+
+  // 4. Fetch
+  const reviews = await Review.find(query)
+    .populate({
+      path: 'studentId',
+      select: 'fullName profilePhoto userId'
+    })
+    .populate({
+      path: 'noteId',
+      select: 'subject chapterName'
+    })
+    .sort(sort)
+    .skip(skip)
+    .limit(limit)
+    .lean();
+
+  const total = await Review.countDocuments(query);
+
+  const formatTimeAgo = (date) => {
+    const seconds = Math.floor((new Date() - date) / 1000);
+    let interval = seconds / 31536000;
+    if (interval > 1) return Math.floor(interval) + "y";
+    interval = seconds / 2592000;
+    if (interval > 1) return Math.floor(interval) + "mo";
+    interval = seconds / 86400;
+    if (interval > 1) return Math.floor(interval) + "d";
+    interval = seconds / 3600;
+    if (interval > 1) return Math.floor(interval) + "h";
+    return "just now";
+  };
+
+  const formattedReviews = reviews.map(r => ({
+    id: r._id,
+    studentId: r.studentId?.userId,
+    user: r.studentId?.fullName || "Student",
+    profilePhoto: r.studentId?.profilePhoto || null,
+    rating: r.rating,
+    comment: r.comment,
+    daysAgo: formatTimeAgo(r.createdAt),
+    verifiedPurchase: r.isVerifiedPurchase,
+    noteInfo: {
+        id: r.noteId?._id,
+        subject: r.noteId?.subject,
+        chapter: r.noteId?.chapterName
+    }
+  }));
+
+  return {
+    reviews: formattedReviews,
+    total,
+    page,
+    limit,
+    totalPages: Math.ceil(total / limit)
+  };
 };

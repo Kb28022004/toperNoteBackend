@@ -191,19 +191,19 @@ exports.getAllApprovedNotes = async (user, filters = {}) => {
     const limit = Math.max(1, parseInt(filters.limit) || 10);
     const skip = (page - 1) * limit;
 
-    // 1. Try Cache for non-personalized guest view
-    const isGuest = !user;
-    const cacheKey = `notes:marketplace:${filters.subject || 'all'}:${filters.class || 'all'}:${filters.board || 'all'}:${filters.topperId || 'all'}:${filters.tags || 'none'}:${filters.search || 'none'}:${filters.sortBy || 'newest'}:${filters.timeRange || 'all'}:${page}`;
+    // 1. Build cache key (personalized per user, or shared for guests)
+    const userId = user?.id || 'guest';
+    const cacheKey = `notes:marketplace:${userId}:${filters.subject || 'all'}:${filters.class || 'all'}:${filters.board || 'all'}:${filters.topperId || 'all'}:${filters.tags || 'none'}:${filters.search || 'none'}:${filters.sortBy || 'newest'}:${filters.timeRange || 'all'}:${page}`;
+    const cacheTTL = userId === 'guest' ? 600 : 60; // guests: 10 min, students: 60 sec
 
-    if (isGuest) {
-        try {
-            if (redis.status === 'ready') {
-                const cached = await redis.get(cacheKey);
-                if (cached) return JSON.parse(cached);
-            }
-        } catch (err) {
-            console.error("Redis Cache Error (Get):", err.message);
+    // 2. Try Redis cache
+    try {
+        if (redis.status === 'ready') {
+            const cached = await redis.get(cacheKey);
+            if (cached) return JSON.parse(cached);
         }
+    } catch (err) {
+        console.error("Redis Cache Error (Get):", err.message);
     }
 
     const query = { status: "PUBLISHED" };
@@ -285,6 +285,15 @@ exports.getAllApprovedNotes = async (user, filters = {}) => {
         purchasedNoteIds = orders.map(o => o.noteId.toString());
     }
 
+    // 7. Check for favorite notes if user is logged in
+    let favoriteNoteIds = [];
+    if (user && user.id && user.role === 'STUDENT') {
+        const student = await StudentProfile.findOne({ userId: user.id }).select('savedNotes').lean();
+        if (student && student.savedNotes) {
+            favoriteNoteIds = student.savedNotes.map(id => id.toString());
+        }
+    }
+
     // Map profiles to notes
     const mappedNotes = notes.map(note => {
         // Find matching profile
@@ -314,6 +323,7 @@ exports.getAllApprovedNotes = async (user, filters = {}) => {
         note.rating = note.stats?.ratingAvg ? note.stats.ratingAvg.toFixed(1) : (4 + Math.random()).toFixed(1); // Fake for now if 0
         note.thumbnail = note.previewImages[0] || null;
         note.isPurchased = purchasedNoteIds.includes(note._id.toString());
+        note.isFavorite = favoriteNoteIds.includes(note._id.toString());
         
         return note;
     });
@@ -328,14 +338,13 @@ exports.getAllApprovedNotes = async (user, filters = {}) => {
         }
     };
 
-    if (isGuest) {
-        try {
-            if (redis.status === 'ready') {
-                await redis.set(cacheKey, JSON.stringify(result), 'EX', 600);
-            }
-        } catch (err) {
-            console.error("Redis Cache Error (Set):", err.message);
+    // 💾 Cache the result
+    try {
+        if (redis.status === 'ready') {
+            await redis.set(cacheKey, JSON.stringify(result), 'EX', cacheTTL);
         }
+    } catch (err) {
+        console.error("Redis Cache Error (Set):", err.message);
     }
 
     return result;
@@ -426,7 +435,7 @@ const formatTimeAgo = (date) => {
  * ===============================
  */
 exports.getNoteDetails = async (noteId, userId, userRole) => {
-    const cacheKey = `note:details:v5:${noteId}`;
+    const cacheKey = `note:details:v6:${noteId}`;
     let noteData;
 
     try {
@@ -443,25 +452,31 @@ exports.getNoteDetails = async (noteId, userId, userRole) => {
     // Fetch if not in cache OR if cache is missing critical rawPdfUrl field
     if (!noteData || !noteData.rawPdfUrl) {
         // 1. Fetch Note + Topper
-        const note = await Note.findOne({ _id: noteId, status: "PUBLISHED" })
+        const note = await Note.findOne({ _id: new mongoose.Types.ObjectId(noteId) })
             .populate("topperId", "firstName lastName profilePhoto stream highlights isVerified");
         
         if (!note) throw new Error("Note not found");
 
-        // ... existing noteData construction ...
-        // (Assuming I should re-fetch and re-cache)
+        // Safety check: Non-owners can only see PUBLISHED notes
+        if (note.status !== 'PUBLISHED' && note.topperId._id.toString() !== userId) {
+            throw new Error("This note is not yet available for viewing");
+        }
 
         // 2. Fetch Topper Profile for extra metadata
         const topperProfile = await TopperProfile.findOne({ userId: note.topperId._id }).lean();
 
         // 5. Fetch Real Reviews
-        const reviews = await Review.find({ noteId })
-            .populate("studentId", "fullName profilePhoto")
+        const reviews = await Review.find({ noteId: new mongoose.Types.ObjectId(noteId) })
+            .populate({
+                path: 'studentId',
+                select: 'fullName profilePhoto userId'
+            })
             .sort({ createdAt: -1 })
             .limit(5)
             .lean();
 
         const formattedReviews = reviews.map(r => ({
+            studentId: r.studentId?.userId, // This is the User ID
             user: r.studentId?.fullName || "Student",
             daysAgo: formatTimeAgo(r.createdAt),
             rating: r.rating,
@@ -471,7 +486,7 @@ exports.getNoteDetails = async (noteId, userId, userRole) => {
 
         noteData = {
             id: note._id,
-            title: `Class ${note.class} ${note.subject} - ${note.chapterName} Complete Notes`,
+            title: `Class ${note.class} ${note.subject} - ${note.chapterName}`,
             subject: note.subject,
             class: note.class,
             board: note.board,
@@ -482,20 +497,16 @@ exports.getNoteDetails = async (noteId, userId, userRole) => {
             price: note.price,
             topper: {
                 id: note.topperId._id,
-                name: topperProfile ? `${topperProfile.firstName} ${topperProfile.lastName}` : "Rahul S.",
+                name: topperProfile ? `${topperProfile.firstName} ${topperProfile.lastName}` : "Topper",
                 profilePhoto: topperProfile?.profilePhoto || note.topperId.profilePhoto,
-                badges: ["TOPPER"],
-                bio: topperProfile?.highlights?.[0] || "IIT Delhi '24 • 98.5% in Boards",
-                isVerified: true
+                badges: topperProfile?.isVerified ? ["VERIFIED TOPPER"] : ["TOPPER"],
+                bio: topperProfile?.shortBio || topperProfile?.highlights?.[0] || "Topper at ToppersNote",
+                isVerified: topperProfile?.status === 'APPROVED'
             },
-            description: `Comprehensive handwritten notes covering ${note.chapterName}. Includes solved examples from last 10 years of boards. Highlights key formulas and derivation steps clearly. Perfect for last-minute revision.`,
-            language: "English",
-            pdfSize: "12 MB",
-            tableOfContents: [
-                 { title: `Introduction to ${note.chapterName}`, page: "Pg 1-5" },
-                 { title: "Key Concepts & Formulas", page: "Pg 6-18" },
-                 { title: "Solved Examples (PYQs)", page: "Pg 19-32" }
-            ],
+            description: note.description || "No description provided for these notes.",
+            language: note.language || "English",
+            pdfSize: note.pdfSize || null,
+            tableOfContents: note.tableOfContents || [],
             reviews: formattedReviews,
             rawPdfUrl: note.pdfUrl
         };
@@ -529,18 +540,28 @@ exports.getNoteDetails = async (noteId, userId, userRole) => {
         finalPreviews = finalPreviews.slice(0, Math.min(previewLimit, finalPreviews.length));
     }
     
-    // 6. Check Following Status
+    // 6. Check Following Status & Sales Count
     let isFollowing = false;
-    if (userId) {
-        isFollowing = !!(await Follow.exists({ followerId: userId, followingId: noteData.topper.id }));
-    }
+    let salesCount = 0;
+    
+    const [followExists, currentSales, savedExists] = await Promise.all([
+        userId ? Follow.exists({ followerId: userId, followingId: noteData.topper.id }) : Promise.resolve(false),
+        Order.countDocuments({ noteId, paymentStatus: 'SUCCESS' }),
+        userId ? StudentProfile.exists({ userId, savedNotes: noteId }) : Promise.resolve(false)
+    ]);
+
+    isFollowing = !!followExists;
+    salesCount = currentSales;
+    const isFavorite = !!savedExists;
 
     return {
         ...noteData,
         previewImages: finalPreviews,
         isPurchased: !!isPurchased,
-        isFollowing, 
-        pdfUrl: isPurchased ? noteData.rawPdfUrl : null, // Internal field
+        isFollowing,
+        isFavorite,
+        salesCount, 
+        pdfUrl: isPurchased ? noteData.rawPdfUrl : null,
         price: {
             current: noteData.price,
             original: Math.round(noteData.price * 1.5),
@@ -578,22 +599,26 @@ exports.getNoteBuyers = async (topperId, noteId) => {
 
   if (!orders.length) return [];
 
+  // Filter out any orders where studentId might be null (e.g. deleted user)
+  const validOrders = orders.filter(o => o.studentId && o.studentId._id);
+
   // 3️⃣ Fetch student profiles
-  const studentIds = orders.map((o) => o.studentId._id);
+  const studentIds = validOrders.map((o) => o.studentId._id);
 
   const students = await StudentProfile.find({
     userId: { $in: studentIds },
   })
-    .select("fullName class board profilePhoto")
+    .select("userId fullName class board profilePhoto")
     .lean();
 
   // 4️⃣ Map response
-  return orders.map((order) => {
+  return validOrders.map((order) => {
     const profile = students.find(
-      (s) => s.userId.toString() === order.studentId._id.toString()
+      (s) => s.userId?.toString() === order.studentId._id.toString()
     );
 
     return {
+      studentId: order.studentId._id,
       studentName: profile?.fullName || "Student",
       class: profile?.class,
       board: profile?.board,
@@ -603,19 +628,135 @@ exports.getNoteBuyers = async (topperId, noteId) => {
   });
 };
 
-exports.getMyNotes = async (userId) => {
-  const notes = await Note.find({ topperId: userId }).sort({ createdAt: -1 }).lean();
-  
-  // Fetch sales count for each note
+/**
+ * ===============================
+ * ❤️ TOGGLE FAVORITE NOTE (STUDENT)
+ * ===============================
+ */
+exports.toggleFavoriteNote = async (userId, noteId) => {
+    // 1. Find profile
+    const profile = await StudentProfile.findOne({ userId });
+    if (!profile) throw new Error("Student profile not found");
+
+    // 2. Check if already favorited
+    const noteIndex = profile.savedNotes.indexOf(noteId);
+    let isFavorite = false;
+
+    if (noteIndex > -1) {
+        // Unfavorite
+        profile.savedNotes.splice(noteIndex, 1);
+        isFavorite = false;
+    } else {
+        // Favorite
+        profile.savedNotes.push(noteId);
+        isFavorite = true;
+    }
+
+    await profile.save();
+    return { isFavorite, message: isFavorite ? "Note added to favorites" : "Note removed from favorites" };
+};
+
+/**
+ * ===============================
+ * ⭐ GET FAVORITE NOTES (STUDENT)
+ * ===============================
+ */
+exports.getFavoriteNotes = async (userId, options = {}) => {
+    const { page = 1, limit = 10, search = '' } = options;
+    const skip = (page - 1) * limit;
+
+    const profile = await StudentProfile.findOne({ userId }).populate({
+        path: 'savedNotes',
+        match: search ? {
+            $or: [
+                { chapterName: { $regex: search, $options: 'i' } },
+                { subject: { $regex: search, $options: 'i' } }
+            ]
+        } : {}
+    });
+
+    if (!profile) throw new Error("Student profile not found");
+
+    const total = profile.savedNotes.length;
+    // Client side pagination because populate match doesn't support pagination easily on subdocs
+    const paginatedNotes = profile.savedNotes.slice(skip, skip + limit);
+
+    // Enrich with topper info
+    const enrichedNotes = await Promise.all(paginatedNotes.map(async (note) => {
+        const topper = await TopperProfile.findOne({ userId: note.topperId }).select('firstName lastName profilePhoto stream').lean();
+        return {
+            _id: note._id,
+            title: note.chapterName,
+            subject: note.subject,
+            class: note.class,
+            topperName: topper ? `${topper.firstName} ${topper.lastName}` : "Topper",
+            profilePhoto: topper?.profilePhoto || null,
+            thumbnail: note.previewImages?.[0] || null,
+            pageCount: note.pageCount || 0,
+            price: note.price
+        };
+    }));
+
+    return {
+        notes: enrichedNotes,
+        total,
+        page: parseInt(page),
+        totalPages: Math.ceil(total / limit)
+    };
+};
+
+exports.getMyNotes = async (userId, options = {}) => {
+  const { search = '', status, sortBy = 'newest', page = 1, limit = 10 } = options;
+  const skip = (parseInt(page) - 1) * parseInt(limit);
+
+  // Build filter
+  const filter = { topperId: userId };
+  if (status && status !== 'all') filter.status = status.toUpperCase();
+  if (search) {
+    filter.$or = [
+      { chapterName: { $regex: search, $options: 'i' } },
+      { subject:     { $regex: search, $options: 'i' } },
+    ];
+  }
+  // Only show notes with at least 1 successful sale
+  if (options.sold === 'true') {
+    const soldNoteIds = await Order.distinct('noteId', {
+      topperId: userId,
+      paymentStatus: 'SUCCESS',
+    });
+    filter._id = { $in: soldNoteIds };
+  }
+
+
+  // Sort
+  let sortOptions = { createdAt: -1 };
+  if (sortBy === 'oldest')      sortOptions = { createdAt:  1 };
+  else if (sortBy === 'price_low')  sortOptions = { price: 1 };
+  else if (sortBy === 'price_high') sortOptions = { price: -1 };
+  else if (sortBy === 'sales')      sortOptions = { salesCount: -1 };
+
+  const totalNotes = await Note.countDocuments(filter);
+  const notes      = await Note.find(filter)
+    .sort(sortOptions)
+    .skip(skip)
+    .limit(parseInt(limit))
+    .lean();
+
+  // Enrich with sales count
   const enrichedNotes = await Promise.all(notes.map(async (note) => {
     const salesCount = await Order.countDocuments({ noteId: note._id, paymentStatus: 'SUCCESS' });
-    return {
-      ...note,
-      salesCount
-    };
+    return { ...note, salesCount };
   }));
 
-  return enrichedNotes;
+  return {
+    notes: enrichedNotes,
+    pagination: {
+      totalNotes,
+      totalPages: Math.ceil(totalNotes / parseInt(limit)),
+      currentPage: parseInt(page),
+      limit: parseInt(limit),
+    },
+  };
 };
 
 /**
@@ -626,6 +767,7 @@ exports.getMyNotes = async (userId) => {
 exports.getPurchasedNotes = async (userId, options = {}) => {
   const { search = '', page = 1, limit = 10 } = options;
   const skip = (page - 1) * limit;
+
 
   // 1. Fetch ALL successful orders for this student to get noteIds
   // (We need the list of allowed notes before we can filter them by search)
@@ -684,5 +826,127 @@ exports.getPurchasedNotes = async (userId, options = {}) => {
     total: totalNotes,
     page: parseInt(page),
     totalPages: Math.ceil(totalNotes / limit)
+  };
+};
+
+/**
+ * getMySalesDetails — returns a topper's complete sales data:
+ * • Summary: totalSales, totalRevenue, totalNotesSold
+ * • Per-note breakdown with buyer profiles, paginated
+ *
+ * GET /notes/me/sales?page=1&limit=10&search=
+ */
+exports.getMySalesDetails = async (topperId, options = {}) => {
+  const page  = Math.max(1, parseInt(options.page)  || 1);
+  const limit = Math.max(1, parseInt(options.limit) || 10);
+  const skip  = (page - 1) * limit;
+  const search = options.search || '';
+
+  // 1. All topper's note IDs (optionally filtered by name/subject search)
+  const noteFilter = { topperId };
+  if (search) {
+    noteFilter.$or = [
+      { chapterName: { $regex: search, $options: 'i' } },
+      { subject:     { $regex: search, $options: 'i' } },
+    ];
+  }
+  const myNotes = await Note.find(noteFilter)
+    .select('_id chapterName subject class board price status')
+    .lean();
+
+  const myNoteIds = myNotes.map(n => n._id);
+
+  // 2. All successful orders for those notes
+  const allOrders = await Order.find({
+    noteId:        { $in: myNoteIds },
+    paymentStatus: 'SUCCESS',
+  })
+    .populate({ path: 'studentId', select: '_id' })
+    .lean();
+
+  // 3. Global summary
+  const totalSales   = allOrders.length;
+  const totalRevenue = allOrders.reduce((sum, o) => sum + (o.amountPaid || 0), 0);
+
+  // 4. Group orders by noteId
+  const ordersByNote = {};
+  allOrders.forEach(o => {
+    const key = o.noteId.toString();
+    if (!ordersByNote[key]) ordersByNote[key] = [];
+    ordersByNote[key].push(o);
+  });
+
+  // 5. Only notes that actually sold (have at least 1 order)
+  const soldNoteIds = Object.keys(ordersByNote);
+  const soldNotes   = myNotes.filter(n => soldNoteIds.includes(n._id.toString()));
+  const totalNotesSold = soldNotes.length;
+
+  // 6. Paginate on sold notes
+  const paginatedNotes = soldNotes.slice(skip, skip + limit);
+
+  // 7. Collect all student IDs we need to populate
+  const neededStudentIds = [];
+  paginatedNotes.forEach(note => {
+    const orders = ordersByNote[note._id.toString()] || [];
+    orders.forEach(o => {
+      if (o.studentId?._id) neededStudentIds.push(o.studentId._id);
+    });
+  });
+
+  // 8. Fetch student profiles in one query
+  const studentProfiles = await StudentProfile.find({
+    userId: { $in: neededStudentIds },
+  })
+    .select('userId fullName class board profilePhoto')
+    .lean();
+
+  const profileMap = {};
+  studentProfiles.forEach(p => { profileMap[p.userId.toString()] = p; });
+
+  // 9. Build per-note response
+  const noteBreakdown = paginatedNotes.map(note => {
+    const orders  = ordersByNote[note._id.toString()] || [];
+    const revenue = orders.reduce((sum, o) => sum + (o.amountPaid || 0), 0);
+
+    const buyers = orders.map(order => {
+      const profile = profileMap[order.studentId?._id?.toString()] || {};
+      return {
+        studentId:   order.studentId?._id,
+        name:        profile.fullName  || 'Student',
+        class:       profile.class     || null,
+        board:       profile.board     || null,
+        profilePhoto:profile.profilePhoto || null,
+        amountPaid:  order.amountPaid,
+        purchasedAt: order.createdAt,
+      };
+    });
+
+    return {
+      noteId:      note._id,
+      chapterName: note.chapterName,
+      subject:     note.subject,
+      class:       note.class,
+      board:       note.board,
+      price:       note.price,
+      status:      note.status,
+      totalSales:  orders.length,
+      revenue,
+      buyers,
+    };
+  });
+
+  return {
+    summary: {
+      totalSales,
+      totalRevenue,
+      totalNotesSold,
+    },
+    notes: noteBreakdown,
+    pagination: {
+      currentPage: page,
+      totalPages:  Math.ceil(totalNotesSold / limit),
+      totalNotesSold,
+      limit,
+    },
   };
 };

@@ -6,6 +6,7 @@ const criteria = require("../../config/topperCriteria");
 const Note = require('../notes/notes.model');
 const redis = require("../../config/redis");
 const StudentProfile = require("../students/student.model");
+const Payout = require("../earnings/earnings.model");
 
 const avg = (arr) => arr.reduce((sum, s) => sum + s.marks, 0) / arr.length;
 
@@ -461,4 +462,44 @@ exports.getDetailedUsage = async () => {
     totalAppTime, // in seconds
     topActiveStudents: students
   };
+};
+
+// 💳 Payout Management
+exports.getPayoutRequests = async ({ status = 'PENDING', page = 1, limit = 10 }) => {
+  const skip = (page - 1) * limit;
+  const payouts = await Payout.find({ status })
+    .populate('topperId', 'phone')
+    .sort({ createdAt: -1 })
+    .skip(skip)
+    .limit(limit)
+    .lean();
+
+  const total = await Payout.countDocuments({ status });
+
+  return {
+    data: payouts,
+    pagination: {
+      total,
+      page,
+      pages: Math.ceil(total / limit),
+      limit
+    }
+  };
+};
+
+exports.updatePayoutStatus = async (payoutId, status, transactionId, adminRemarks) => {
+  const payout = await Payout.findById(payoutId);
+  if (!payout) throw new Error('Payout request not found');
+
+  if (payout.status !== 'PENDING') {
+    throw new Error('Payout request is already processed');
+  }
+
+  payout.status = status;
+  if (transactionId) payout.transactionId = transactionId;
+  if (adminRemarks) payout.adminRemarks = adminRemarks;
+  if (status === 'PAID') payout.paidAt = new Date();
+
+  await payout.save();
+  return `Payout ${status.toLowerCase()} successfully`;
 };

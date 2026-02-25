@@ -31,6 +31,19 @@ exports.getProfile = async (req, res, next) => {
   }
 };
 
+exports.getPublicProfile = async (req, res, next) => {
+  try {
+    const { studentId } = req.params;
+    const profile = await studentService.getPublicStudentProfile(studentId);
+    res.json({
+      success: true,
+      data: profile,
+    });
+  } catch (err) {
+    next(err);
+  }
+};
+
 exports.getFollowedToppers = async (req, res, next) => {
   try {
     const data = await studentService.getFollowedToppers(req.user.id, req.query);

@@ -67,8 +67,9 @@ exports.getNoteDetails = async (req, res, next) => {
 
 exports.getMyNotes = async (req, res, next) => {
     try {
-        const notes = await noteService.getMyNotes(req.user.id);
-        return sendSuccess(res, 'Your notes fetched', notes);
+        const { search, status, sortBy, page, limit } = req.query;
+        const result = await noteService.getMyNotes(req.user.id, { search, status, sortBy, page, limit });
+        return sendSuccess(res, 'Your notes fetched', result);
     } catch (err) {
         next(err);
     }
@@ -78,8 +79,46 @@ exports.getPurchasedNotes = async (req, res, next) => {
     try {
         const { search, page, limit } = req.query;
         const result = await noteService.getPurchasedNotes(req.user.id, { search, page, limit });
-        return sendSuccess(res, 'Purchased notes fetched', result);
+        return sendSuccess(res, 'Purchased notes fetched', result.notes, {
+            total: result.total,
+            page: result.page,
+            totalPages: result.totalPages
+        });
     } catch (err) {
         next(err);
     }
 };
+
+exports.getMySalesDetails = async (req, res, next) => {
+    try {
+        const { search, page, limit } = req.query;
+        const result = await noteService.getMySalesDetails(req.user.id, { search, page, limit });
+        return sendSuccess(res, 'Sales details fetched', result);
+    } catch (err) {
+        next(err);
+    }
+};
+
+exports.toggleFavoriteNote = async (req, res, next) => {
+    try {
+        const result = await noteService.toggleFavoriteNote(req.user.id, req.params.noteId);
+        return sendSuccess(res, result.message, result);
+    } catch (err) {
+        next(err);
+    }
+};
+
+exports.getFavoriteNotes = async (req, res, next) => {
+    try {
+        const { search, page, limit } = req.query;
+        const result = await noteService.getFavoriteNotes(req.user.id, { search, page, limit });
+        return sendSuccess(res, 'Favorite notes fetched', result.notes, {
+            total: result.total,
+            page: result.page,
+            totalPages: result.totalPages
+        });
+    } catch (err) {
+        next(err);
+    }
+};
+

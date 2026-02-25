@@ -60,13 +60,22 @@ exports.getPublicProfile = async (req, res, next) => {
   } catch (err) {
     next(err);
   }
-};// Get Followers
+};
+
+// Get Followers
 exports.getTopperFollowers = async (req, res, next) => {
   try {
-    const followers = await topperService.getTopperFollowers(req.params.userId);
+    const { search, class: classFilter, page, limit, sortBy } = req.query;
+    const result = await topperService.getTopperFollowers(req.params.userId, {
+      search,
+      class: classFilter,
+      page,
+      limit,
+      sortBy
+    });
     res.json({
       success: true,
-      data: followers
+      data: result
     });
   } catch (err) {
     next(err);
@@ -89,10 +98,20 @@ exports.followTopper = async (req, res, next) => {
 };
 exports.getAllToppers = async (req, res, next) => {
   try {
-    const toppers = await topperService.getAllToppers(req.user);
+    const { search, class: classFilter, board, sortBy, page, limit, stream } = req.query;
+    const result = await topperService.getAllToppers({
+      search,
+      class: classFilter,
+      board,
+      sortBy,
+      page,
+      limit,
+      stream
+    }, req.user);
+    
     res.json({
       success: true,
-      data: toppers,
+      data: result,
     });
   } catch (err) {
     next(err);
@@ -103,6 +122,24 @@ exports.getMyProfile = async (req, res, next) => {
     const profile = await topperService.getMyProfile(req.user.id);
     res.json({
       success: true,
+      data: profile,
+    });
+  } catch (err) {
+    next(err);
+  }
+};
+
+exports.updateProfilePicture = async (req, res, next) => {
+  try {
+    const profile = await topperService.updateProfilePicture(
+      req.user.id,
+      req.file,
+      req
+    );
+
+    res.json({
+      success: true,
+      message: 'Profile picture updated',
       data: profile,
     });
   } catch (err) {

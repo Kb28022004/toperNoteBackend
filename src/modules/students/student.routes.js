@@ -37,6 +37,12 @@ router.get(
 );
 
 router.get(
+    '/public/:studentId',
+    auth,
+    controller.getPublicProfile
+);
+
+router.get(
     '/followed-toppers',
     auth,
     controller.getFollowedToppers

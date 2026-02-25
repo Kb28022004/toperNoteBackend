@@ -21,3 +21,41 @@ exports.addReview = async (req, res, next) => {
     next(err);
   }
 };
+
+exports.getNoteReviews = async (req, res, next) => {
+  try {
+    const { noteId } = req.params;
+    const { page, limit } = req.query;
+
+    const data = await reviewService.getNoteReviews(noteId, { page, limit });
+
+    res.status(200).json({
+      success: true,
+      data
+    });
+  } catch (err) {
+    next(err);
+  }
+};
+
+exports.getTopperReviews = async (req, res, next) => {
+  try {
+    const { topperId } = req.params;
+    const { page, limit, search, sortBy, rating } = req.query;
+
+    const data = await reviewService.getTopperReviews(topperId, { 
+      page, 
+      limit, 
+      search, 
+      sortBy, 
+      rating 
+    });
+
+    res.status(200).json({
+      success: true,
+      data
+    });
+  } catch (err) {
+    next(err);
+  }
+};

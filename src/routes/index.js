@@ -7,5 +7,6 @@ router.use('/admin',    require('../modules/admin/admin.routes'));
 router.use('/notes',    require('../modules/notes/notes.routes'));
 router.use('/reviews',  require('../modules/reviews/review.routes'));
 router.use('/payments', require('../modules/payments/payment.routes'));
+router.use('/earnings', require('../modules/earnings/earnings.routes'));
 
 module.exports = router;

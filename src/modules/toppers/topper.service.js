@@ -196,112 +196,172 @@ exports.getPublicProfile = async (userId, viewerId, req) => {
 
   // 3️⃣ Check if following - Always dynamic
   let isFollowing = false;
+  let favoriteNoteIds = [];
   if (viewerId) {
-     isFollowing = !!(await Follow.exists({ followerId: viewerId, followingId: userId }));
+     const [followExists, student] = await Promise.all([
+         Follow.exists({ followerId: viewerId, followingId: userId }),
+         StudentProfile.findOne({ userId: viewerId }).select('savedNotes').lean()
+     ]);
+     isFollowing = !!followExists;
+     if (student && student.savedNotes) {
+         favoriteNoteIds = student.savedNotes.map(id => id.toString());
+     }
   }
+
+  // Enrich notes with isFavorite status
+  if (profileData.latestUploads) {
+    profileData.latestUploads = profileData.latestUploads.map(n => ({
+        ...n,
+        isFavorite: favoriteNoteIds.includes(n.id.toString())
+    }));
+  }
+
   return { ...profileData, isFollowing };
 };
 
 // ... existing code ...
 
 // get all toppers (public call)
-exports.getAllToppers = async (user) => {
-    let enrichedToppers = [];
+exports.getAllToppers = async (filters = {}, user) => {
+    const { search, class: classFilter, board, sortBy, page = 1, limit = 20, stream } = filters;
+    const skip = (page - 1) * limit;
 
-  // 1. Try to get from Cache
-  let cachedToppers;
-  try {
-    if (redis.status === 'ready') {
-        cachedToppers = await redis.get('all_toppers_enriched');
+    // 1. Build Query
+    const query = { status: 'APPROVED' };
+
+    if (search) {
+        query.$or = [
+            { firstName: { $regex: search, $options: 'i' } },
+            { lastName: { $regex: search, $options: 'i' } },
+            { expertiseClass: { $regex: search, $options: 'i' } }
+        ];
     }
-  } catch (err) {
-    console.error("Redis Cache Error (Get All Toppers):", err.message);
-  }
-  
-  if (cachedToppers) {
-    enrichedToppers = JSON.parse(cachedToppers);
-  } else {
-    // 2. If Miss, Compute items (Expensive Aggregation)
-    const toppers = await TopperProfile.find({ status: 'APPROVED' })
-      .select('userId firstName lastName profilePhoto stream expertiseClass shortBio highlights stats board')
-      .lean();
 
-    try {
-        enrichedToppers = await Promise.all(
-          toppers.map(async (topper) => {
-            // Fetch notes for this topper
-            const notes = await Note.find({ 
-              topperId: topper.userId, 
-              status: 'PUBLISHED' 
+    if (classFilter) {
+        query.expertiseClass = classFilter;
+    }
+
+    if (board) {
+        query.board = board;
+    }
+
+    if (stream) {
+        query.stream = stream;
+    }
+
+    // 2. Check for global cache ONLY if no filters/search/pagination (Home page case)
+    const isDefaultCall = !search && !classFilter && !board && !stream && page == 1 && !sortBy;
+    if (isDefaultCall) {
+        try {
+            if (redis.status === 'ready') {
+                const cached = await redis.get('all_toppers_enriched');
+                if (cached) return JSON.parse(cached); // returns { toppers, pagination }
+            }
+        } catch (err) {
+            console.error("Redis Cache Error (Get All Toppers):", err.message);
+        }
+    }
+
+    // 3. Sorting
+    let sortObj = { createdAt: -1 };
+    if (sortBy === 'rating') sortObj = { 'stats.rating.average': -1 };
+    if (sortBy === 'popularity') sortObj = { 'stats.followersCount': -1 };
+
+    // 4. Fetch Toppers
+    const toppers = await TopperProfile.find(query)
+        .select('userId firstName lastName profilePhoto stream expertiseClass shortBio highlights stats board')
+        .sort(sortObj)
+        .skip(skip)
+        .limit(limit)
+        .lean();
+
+    // 5. Enrich Data (Compute Stats)
+    const enrichedToppers = await Promise.all(
+        toppers.map(async (topper) => {
+            const notes = await Note.find({
+                topperId: topper.userId,
+                status: 'PUBLISHED'
             })
             .select('subject chapterName class price stats previewImages pageCount createdAt')
             .sort({ createdAt: -1 })
             .lean();
-    
-            // Calculate aggregated stats
+
             const totalNotes = notes.length;
             let reviewSum = 0;
             let weightedRatingSum = 0;
-            
+
             notes.forEach(n => {
-              const count = n.stats?.ratingCount || 0;
-              const rating = n.stats?.ratingAvg || 0;
-              reviewSum += count;
-              weightedRatingSum += (rating * count);
+                const count = n.stats?.ratingCount || 0;
+                const rating = n.stats?.ratingAvg || 0;
+                reviewSum += count;
+                weightedRatingSum += (rating * count);
             });
-            
+
             const avgRating = reviewSum > 0 ? (weightedRatingSum / reviewSum).toFixed(1) : 0;
-    
-            // Latest 3 notes for display
+
             const latestNotes = notes.slice(0, 3).map(n => ({
-              id: n._id,
-              title: `${n.subject} - ${n.chapterName}`,
-              subject: n.subject,
-              price: n.price,
-              rating: n.stats?.ratingAvg || 0,
-              coverImage: n.previewImages?.[0] || null
+                id: n._id,
+                title: `${n.subject} - ${n.chapterName}`,
+                subject: n.subject,
+                price: n.price,
+                rating: n.stats?.ratingAvg || 0,
+                coverImage: n.previewImages?.[0] || null
             }));
-    
+
             const { expertise, bio } = formatTopperMetadata(topper);
-    
+
+            // Dynamically count sold notes for these specific toppers
+            const soldCount = await Order.countDocuments({ 
+                topperId: topper.userId, 
+                paymentStatus: 'SUCCESS' 
+            });
+
             return {
-              id: topper._id, // Topper Profile ID
-              userId: topper.userId, // User ID (for linking)
-              name: `${topper.firstName} ${topper.lastName}`,
-              profilePhoto: topper.profilePhoto,
-              bio: bio,
-              expertise: expertise,
-              expertiseClass: topper.expertiseClass, // Added for filtering
-              board: topper.board || "CBSE", // Assuming default or fetch if needed (schema has board)
-              stream: topper.stream,
-              highlights: topper.highlights || [],
-              
-              stats: {
-                totalNotes,
-                avgRating: parseFloat(avgRating),
-                totalReviews: reviewSum
-              },
-    
-              latestNotes
+                id: topper._id,
+                userId: topper.userId,
+                name: `${topper.firstName} ${topper.lastName}`,
+                profilePhoto: topper.profilePhoto,
+                bio: bio,
+                expertise: expertise,
+                expertiseClass: topper.expertiseClass,
+                board: topper.board || "CBSE",
+                stream: topper.stream,
+                highlights: topper.highlights || [],
+                stats: {
+                    totalNotes,
+                    avgRating: parseFloat(avgRating),
+                    totalReviews: reviewSum,
+                    totalSold: soldCount
+                },
+                latestNotes
             };
-          })
-        );
-    } catch (err) {
-        console.error("ERROR in getAllToppers mapping:", err);
-        throw err;
+        })
+    );
+
+    // 6. Count total for pagination
+    const total = await TopperProfile.countDocuments(query);
+
+    const result = {
+        toppers: enrichedToppers,
+        pagination: {
+            total,
+            page: parseInt(page),
+            totalPages: Math.ceil(total / limit)
+        }
+    };
+
+    // 7. Cache the default (no-filter, page 1) call
+    if (isDefaultCall) {
+        try {
+            if (redis.status === 'ready') {
+                await redis.set('all_toppers_enriched', JSON.stringify(result), 'EX', 3600);
+            }
+        } catch (err) {
+            console.error("Redis Cache Error (Set All Toppers):", err.message);
+        }
     }
 
-    // Save to Cache (TTL 1 hour)
-    try {
-      if (redis.status === 'ready') {
-        await redis.set('all_toppers_enriched', JSON.stringify(enrichedToppers), 'EX', 3600);
-      }
-    } catch (err) {
-      console.error("Redis Cache Error (Set All Toppers):", err.message);
-    }
-  }
-
-  return enrichedToppers;
+    return result;
 };
 
 
@@ -395,38 +455,76 @@ exports.followTopper = async (studentId, topperId) => {
   }
 };
 
-// Get Topper Followers
-exports.getTopperFollowers = async (topperId) => {
-  // 1. Fetch Follows
-  const follows = await Follow.find({ followingId: topperId })
-    .populate('followerId', 'profileCompleted') // Fetch minimal user data if needed
-    .sort({ createdAt: -1 })
-    .lean();
-    
-  if (follows.length === 0) return [];
+// Get Topper Followers with Pagination, Search, and Filtering
+exports.getTopperFollowers = async (topperId, options = {}) => {
+  const page = Math.max(1, parseInt(options.page) || 1);
+  const limit = Math.max(1, parseInt(options.limit) || 20);
+  const skip = (page - 1) * limit;
+  const search = options.search || '';
+  const classFilter = options.class;
 
-  // 2. Fetch Profiles for these users
-  const followerUserIds = follows.map(f => f.followerId._id);
-  
-  // Try finding in StudentProfile
-  // Note: Toppers can also follow? If so we need to check both. 
-  // Assuming mostly students follow toppers.
-  const studentProfiles = await StudentProfile.find({ userId: { $in: followerUserIds } })
-    .select('userId fullName profilePhoto class board')
+  // 1. Get all follower user IDs for this topper
+  const allFollows = await Follow.find({ followingId: topperId })
+    .select('followerId createdAt')
     .lean();
 
-  // 3. Map to response
-  return follows.map(follow => {
-    const profile = studentProfiles.find(p => p.userId.toString() === follow.followerId._id.toString());
-    
+  if (allFollows.length === 0) {
     return {
-      userId: follow.followerId._id,
-      name: profile?.fullName || "Topper Student",
-      profilePhoto: profile?.profilePhoto || null,
-      class: profile?.class || null,
-      joinedAt: follow.createdAt
+      followers: [],
+      pagination: { total: 0, page, totalPages: 0 }
     };
+  }
+
+  const followerUserIds = allFollows.map(f => f.followerId);
+  const followDateMap = {};
+  allFollows.forEach(f => {
+    followDateMap[f.followerId.toString()] = f.createdAt;
   });
+
+  // 2. Build StudentProfile query
+  const profileQuery = { userId: { $in: followerUserIds } };
+  
+  if (search) {
+    profileQuery.fullName = { $regex: search, $options: 'i' };
+  }
+  
+  if (classFilter) {
+    profileQuery.class = classFilter;
+  }
+
+  // 3. Execution with Pagination
+  const total = await StudentProfile.countDocuments(profileQuery);
+  const studentProfiles = await StudentProfile.find(profileQuery)
+    .select('userId fullName profilePhoto class board')
+    .sort({ createdAt: -1 })
+    .skip(skip)
+    .limit(limit)
+    .lean();
+
+  // 4. Map to response including join date
+  const followers = studentProfiles.map(profile => ({
+    userId: profile.userId,
+    name: profile.fullName,
+    profilePhoto: profile.profilePhoto || null,
+    class: profile.class || null,
+    board: profile.board || null,
+    joinedAt: followDateMap[profile.userId.toString()]
+  }));
+
+  // Optional: Sort by joinedAt if that's preferred via options.sortBy
+  if (options.sortBy === 'joined') {
+     followers.sort((a, b) => new Date(b.joinedAt) - new Date(a.joinedAt));
+  }
+
+  return {
+    followers,
+    pagination: {
+      total,
+      page,
+      limit,
+      totalPages: Math.ceil(total / limit)
+    }
+  };
 };
 
 exports.getMyProfile = async (userId) => {
@@ -491,4 +589,30 @@ exports.getMyProfile = async (userId) => {
       }
     }
   };
+};
+
+exports.updateProfilePicture = async (userId, file, req) => {
+  if (!file) throw new Error('Profile photo is required');
+
+  const profilePhoto = storageService.getFileUrl(req, `profiles/${file.filename}`);
+
+  const profile = await TopperProfile.findOneAndUpdate(
+    { userId },
+    { profilePhoto },
+    { new: true }
+  );
+
+  if (!profile) throw new Error('Topper profile not found');
+
+  // 🧹 Invalidate Cache
+  try {
+    if (redis.status === 'ready') {
+      await redis.del(`topper:profile:${userId}`);
+      await redis.del('all_toppers_enriched');
+    }
+  } catch (err) {
+    console.error("Redis Cache Error (Update Profile Photo):", err.message);
+  }
+
+  return profile;
 };

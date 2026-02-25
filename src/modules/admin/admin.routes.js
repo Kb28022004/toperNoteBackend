@@ -82,4 +82,19 @@ router.get(
   controller.getStudentUsage
 );
 
+// Payout Management
+router.get(
+  '/payouts',
+  auth,
+  role('ADMIN'),
+  controller.getPayoutRequests
+);
+
+router.patch(
+  '/payouts/:id/status',
+  auth,
+  role('ADMIN'),
+  controller.updatePayoutStatus
+);
+
 module.exports = router;

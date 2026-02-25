@@ -27,4 +27,16 @@ router.post(
   controller.addReview
 );
 
+router.get(
+  '/:noteId',
+  auth,
+  controller.getNoteReviews
+);
+
+router.get(
+  '/topper/:topperId',
+  auth,
+  controller.getTopperReviews
+);
+
 module.exports = router;
